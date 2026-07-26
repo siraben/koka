@@ -11,7 +11,7 @@ Scope is deliberately narrow.  Anything not needed by that service is out.
 | 1. Engineering baseline      | done |
 | 2. Project and package tooling | done |
 | 3. Foundational libraries    | done |
-| 4. HTTP/JSON/SQLite service  | built, one blocking defect |
+| 4. HTTP/JSON/SQLite service  | done |
 
 ---
 
@@ -86,10 +86,17 @@ Done (59 tests, clean under ASan/UBSan/LSan):
 - [x] the reference service, its unit tests, and its integration/stress suite
 - [x] `koka-examples` repository and its documentation
 
-**Not yet passing:** the reference service serves every request correctly and
-33 of its integration assertions pass, but a burst of concurrent connections
-makes the server shut itself down. See the service README for exactly what has
-been ruled out. Milestone 4's acceptance criteria are therefore not met.
+All of Milestone 4's acceptance criteria pass on a clean machine: the service
+starts, `/health` succeeds, items are created and retrieved, data persists in
+SQLite across a restart, 40 concurrent requests all succeed, malformed input
+gets a controlled error, oversized requests are rejected, request timeouts
+cancel work, shutdown stops accepting and waits for active work, sockets and
+statements and connections are cleaned up, logs carry request ids and results,
+dependencies resolve from the lockfile, and the sanitizer checks pass.
+
+Test totals: 244 package tests, 28 service unit tests, 42 integration and
+stress assertions, 39 project-tooling tests. All green, and the integration
+suite is green under ASan/UBSan as well.
 
 ---
 

@@ -5,6 +5,52 @@ discovered, and what was decided.
 
 ---
 
+## Milestone 4 — the reference service
+
+**The last bug was in the test harness.** For a long stretch the service
+appeared unable to serve concurrent connections: 40 concurrent creates all
+landed, but every check *after* them failed, and the port looked dead. The
+cause was a bare `wait` in `run-integration-tests.sh`, which waits for every
+background job — including the server started earlier with `&`. So each
+"after the burst" assertion ran against a server that had already shut down at
+its `NOTES_RUN_MS` deadline.
+
+Recording this because of how much it cost and how convincingly it imitated a
+real defect. What eventually broke the deadlock was measuring an *absolute*
+timestamp: the listener close was at exactly the configured runtime after the
+`server listening` log line, which is impossible if the check ran when I
+thought it did. Everything before that had been relative reasoning about
+ordering, and log ordering across a C `stderr` and a buffered Koka `stdout` is
+not reliable evidence.
+
+Ruling things out was still worth it — the hunt produced eight real fixes —
+but the lesson is to establish *when* an event happened against a clock before
+theorising about *why*.
+
+Fixes found along the way, each a genuine defect:
+
+* a task group ended on a live-task counter, then on quiescence; both drift or
+  race. It now ends when the *root* task finishes, which is what
+  `with-task-group` promises;
+* a sibling unwinding during teardown was recorded as a group failure, and a
+  cancelled root reported "did not produce a result" instead of a cancellation;
+* one connection's failure cancelled the whole server group;
+* the scheduler blocked on the loop for a full timeout with a completion
+  already queued (an accept served from the backlog completes synchronously);
+* a connected socket could close a listening one — a single-field value struct
+  makes `Socket(n)` and `Listener(n)` indistinguishable at runtime, so the kind
+  check lives in C, along with refusing reads, writes and accepts applied to
+  the wrong kind of handle;
+* every path through libuv's connection callback must consume the pending
+  connection, or libuv stops polling the listener while it still reports itself
+  active;
+* the polling accept loop raced a timer against the accept and stranded a
+  connection already accepted in C;
+* `finally` around a computation that drives the scheduler cannot be trusted to
+  run only at the end, so the server owns its listener explicitly.
+
+---
+
 ## Milestone 4 (part) — event loop, tasks, TCP, channels, JSON
 
 **Concurrency architecture.**  Koka's C backend has no async support, so the
