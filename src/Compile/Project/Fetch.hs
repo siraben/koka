@@ -272,6 +272,19 @@ materialize opts base projectDir mbLock dep
     -- The comparison only applies when the lock entry describes the *same*
     -- source: if the manifest moved the pin to another commit, the recorded
     -- checksum belongs to the old commit and is simply superseded.
+    -- Under --locked a lock entry with no checksum is refused rather than
+    -- waved through.  Tampering with a checksum is loud; *deleting* the line
+    -- was silent, which made deletion strictly the better attack on a lockfile
+    -- and left `--locked` asserting nothing about that package's contents.
+    verify name actual
+      | roLocked opts
+      , Just e <- mbLock >>= \lk -> lockEntryFor lk name
+      , null (lockChecksum e)
+      , not (null actual)
+      = Left ("no checksum recorded for '" ++ name ++ "' in " ++ lockFileName
+                ++ "\n  --locked cannot verify a package the lockfile does not"
+                ++ " record a checksum for"
+                ++ "\n  run `koka fetch` to record one")
     verify name actual
       = case mbLock >>= \lk -> lockEntryFor lk name of
           Just e | lockSource e == depSource dep
