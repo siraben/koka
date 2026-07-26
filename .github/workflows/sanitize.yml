@@ -1,0 +1,101 @@
+name: sanitizers
+
+# Native memory checks. Slow, so scheduled rather than run on every push.
+on:
+  schedule:
+    - cron: "17 3 * * 1"     # Mondays, 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch or commit to check"
+        required: false
+        default: "dev"
+
+concurrency:
+  group: sanitize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the compiler
+        run: nix build .#koka --print-build-logs
+
+      # --fasan turns on AddressSanitizer, UndefinedBehaviorSanitizer and leak
+      # checking, and implies --fstdalloc (mimalloc hides leaks from ASan).
+      - name: Sanitize the samples
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -e
+          for f in samples/basic/*.kk samples/handlers/*.kk; do
+            echo "== $f"
+            ./result/bin/koka --fasan -e -v0 "$f"
+          done
+
+      - name: Sanitize the smoke test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cat > /tmp/asan-smoke.kk <<'EOF'
+          effect fun ask() : int
+
+          fun answer() : int
+            with fun ask() 21
+            [ask(), ask()].foldl(0, fn(a, b) a + b)
+
+          fun main()
+            println("smoke:" ++ answer().show)
+          EOF
+          ./result/bin/koka --fasan -e -v0 /tmp/asan-smoke.kk
+
+      # Representative integration tests of the reference stack, under the
+      # sanitizers.  Only runs once those packages exist in the tree.
+      - name: Sanitize the reference service integration tests
+        run: |
+          if [ -x ../koka-examples/run-integration-tests.sh ]; then
+            ASAN_OPTIONS=detect_leaks=1 ../koka-examples/run-integration-tests.sh --asan
+          else
+            echo "reference service not present in this repository; skipped"
+          fi
+
+  valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the compiler
+        run: nix build .#koka --print-build-logs
+
+      # --fstdalloc so valgrind can see the allocations mimalloc would hide.
+      - name: Leak check a compiled program
+        run: |
+          nix develop --command bash -c '
+            ./result/bin/koka -c -v0 --fstdalloc --stats=json \
+              --stats-file=/tmp/stats.json samples/basic/fibonacci.kk
+            exe=$(jq -r .executable.path /tmp/stats.json)
+            valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite "$exe"
+          '

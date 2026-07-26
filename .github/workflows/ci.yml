@@ -1,0 +1,84 @@
+name: ci
+
+# Deliberately not a large platform matrix: this development program targets
+# Linux x86-64 first, and CI exists to keep `dev` buildable.
+on:
+  push:
+    branches: [dev, "m1/**", "m2/**", "m3/**", "m4/**"]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the compiler
+        run: nix build .#koka --print-build-logs
+
+      - name: Version
+        run: ./result/bin/koka --version
+
+      # Generated-C smoke test: koka -> C -> cc -> executable, and check that
+      # the generated C is really produced.
+      - name: Generated-C smoke test
+        run: ./util/dev/smoke.sh ./result/bin/koka
+
+      - name: Compile the examples
+        run: |
+          set -e
+          for f in samples/basic/*.kk samples/handlers/*.kk; do
+            echo "== $f"
+            ./result/bin/koka -c -v0 "$f"
+          done
+
+      - name: Project tooling tests
+        run: ./util/dev/project-tests.sh ./result/bin/koka
+
+      - name: Compiler statistics are valid JSON
+        run: |
+          ./result/bin/koka -c -v0 --stats=json --stats-file=stats.json samples/basic/fibonacci.kk
+          nix shell nixpkgs#jq -c jq -e '.total_ms >= 0 and .generated_c.bytes > 0' stats.json
+
+  compiler-test-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: cabal-${{ runner.os }}-${{ hashFiles('package.yaml') }}
+          restore-keys: cabal-${{ runner.os }}-
+
+      - name: Run the upstream test suite
+        run: |
+          nix develop --command bash -c '
+            hpack
+            cabal test --project-file=cabal.project.plain
+          '
