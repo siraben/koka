@@ -110,8 +110,14 @@ hashFiles root rels
       = do let full = root </> rel
            isFile <- doesFileExist full
            bytes  <- if isFile then BS.readFile full else return BS.empty
-           let ctx' = SHA256.updates ctx
-                        [ BC.pack (show (length rel) ++ ":" ++ rel ++ ":")
+           -- `utf8`, not `BC.pack`: the latter truncates every `Char` to eight
+           -- bits, so `src/A.kk` and `src/\321.kk` hashed identically -- and
+           -- this is the function every lockfile checksum and every build-cache
+           -- source hash goes through.  The length prefix counts octets for
+           -- the same reason.
+           let relB = utf8 rel
+               ctx' = SHA256.updates ctx
+                        [ BC.pack (show (BS.length relB) ++ ":"), relB, BC.pack ":"
                         , BC.pack (show (BS.length bytes) ++ ":")
                         , bytes ]
            foldMMaybe ctx' rest
