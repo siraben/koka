@@ -18,6 +18,7 @@ import System.IO              ( hPutStrLn, stdout, stderr)
 import Control.Monad          ( when, foldM )
 import Data.List              ( intersperse)
 import Data.Maybe
+import Data.Time.Clock        ( getCurrentTime, diffUTCTime )
 
 import Platform.Config
 import Lib.PPrint
@@ -39,6 +40,8 @@ import Type.Pretty            ( ppScheme, Env(context,importsMap,colors), ppName
 
 import Compile.Options
 import Compile.BuildContext
+import Compile.Stats
+import Compile.Project.Command ( runProjectCommand )
 import qualified Platform.GetOptions
 
 -- Main entry point for the command line compiler
@@ -65,6 +68,7 @@ plainLS p flags files
 runWithLSArgs :: (ColorPrinter -> Flags -> [FilePath] -> IO ()) -> String -> IO ()
 runWithLSArgs runLanguageServer args
   = do (flags,mode) <- getOptions args
+       statsEnable (statsFormat flags /= StatsNone)
        let with = if (not (null (redirectOutput flags)))
                    then withFileNoColorPrinter (redirectOutput flags)
                    else if (console flags == "html")
@@ -90,14 +94,32 @@ mainMode runLanguageServer flags mode p
      ModeVersion
       -> withNoColorPrinter stdout (\monop -> showVersion flags monop)
      ModeCompiler files
-      -> do ok <- compileAll p flags files
+      -> do ok <- withStats flags (compileAll p flags files)
             when (not ok) $
               do hPutStrLn stderr ("Failed to compile " ++ concat (intersperse "," files))
                  exitFailure
+     ModeProject cmd args
+      -> do ok <- withStats flags (runProjectCommand cmd flags args (\fs fps -> compileAll p fs fps))
+            when (not ok) exitFailure
      ModeInteractive files
       -> interpret p flags files
      ModeLanguageServer files
       -> runLanguageServer p flags files
+
+-- | Time the whole invocation and emit the collected statistics afterwards.
+-- Statistics are emitted even when the build fails, so a failing build still
+-- reports where its time went.
+withStats :: Flags -> IO Bool -> IO Bool
+withStats flags action
+  | statsFormat flags == StatsNone = action
+  | otherwise
+  = do t0 <- getCurrentTime
+       ok <- action
+       t1 <- getCurrentTime
+       statsSetTotal (realToFrac (diffUTCTime t1 t0) * 1000.0)
+       statsRecordArtifacts (fullBuildDir flags) (outFinalPath flags)
+       statsEmit (statsFormat flags) (statsFile flags) version (show (target flags))
+       return ok
 
 
 -- Compile (and/or link and/or evaluate) argument files

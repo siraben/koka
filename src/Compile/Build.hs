@@ -72,6 +72,7 @@ import Compile.Module
 import Compile.TypeCheck      ( typeCheck )
 import Compile.Optimize       ( coreOptimize )
 import Compile.CodeGen        ( codeGen, Link, LinkResult(..), noLink )
+import Compile.Stats          ( statsTimePhase )
 import Core.Core (Core(coreProgDefs))
 import GHC.IORef (atomicSwapIORef)
 
@@ -272,7 +273,7 @@ moduleCompile mainEntries parsedMap tcheckedMap optimizedMap codegenMap linkedMa
           then done mod  -- dependencies had errors
           else do phaseVerbose (if fullLink then 1 else 2) (if fullLink then "linking" else "link") $
                                 \penv -> TP.ppName penv (modName mod) -- <+> text ", imports:" <+> list (map (TP.ppName penv . modName) imports)
-                  mbEntry <- pooledIO $ link imports  -- link it! (specifics were returned by codegen)
+                  mbEntry <- statTimed "link" $ pooledIO $ link imports  -- link it! (specifics were returned by codegen)
                   ftIface <- getFileTime (modIfacePath mod)
                   let mod' = mod{ modPhase = PhaseLinked
                                 , modIfaceTime = ftIface
@@ -314,7 +315,7 @@ moduleCodeGen mainEntries parsedMap tcheckedMap optimizedMap codegenMap
                       inlines = inlinesFromModules imports
                   mbEntry <- getMainEntry (defsGamma defs) mainEntries mod
                   seqIO   <- sequentialIO
-                  link    <- pooledIO $ codeGen term flags seqIO
+                  link    <- statTimed "codegen" $ pooledIO $ codeGen term flags seqIO
                                                 (defsNewtypes defs) (defsBorrowed defs) (defsKGamma defs) (defsGamma defs)
                                                 mbEntry imports mod
                   let mod' = mod{ modPhase = PhaseCodeGen }
@@ -393,7 +394,7 @@ moduleOptimize parsedMap tcheckedMap optimizedMap
                   flags <- getFlags
                   let defs    = defsFromModules (mod:imports)  -- todo: optimize by reusing the defs from the type check?
                       inlines = inlinesFromModules imports
-                  (core,inlineDefs) <- liftError $ coreOptimize flags (defsNewtypes defs) (defsGamma defs) inlines (fromJust (modCore mod))
+                  (core,inlineDefs) <- statTimed "optimize" $ liftError $ coreOptimize flags (defsNewtypes defs) (defsGamma defs) inlines (fromJust (modCore mod))
                   let mod' = mod{ modPhase   = PhaseOptimized
                                 , modCore    = Just $! core
                                 , modDefinitions = if showHiddenTypeSigs flags
@@ -440,7 +441,11 @@ moduleTypeCheck parsedMap tcheckedMap
                   let defs     = defsFromModules imports
                       cimports = coreImportsFromModules (modDeps mod) imports
                       program  = fromJust (modProgram mod)
-                  case checkError (typeCheck flags defs cimports program) of
+                  -- forcing to WHNF here is what actually runs the checker,
+                  -- which is what we want to attribute to the phase
+                  tcresult <- statTimed "typecheck" $
+                              let r = checkError (typeCheck flags defs cimports program) in seq r (return r)
+                  case tcresult of
                     Left errs
                       -> done mod{ modPhase  = PhaseTypedError
                                  , modErrors = mergeErrors errs (modErrors mod)
@@ -513,7 +518,9 @@ moduleParse tparsedMap
         phase "parse" $ \penv -> text (if verbose flags > 1 || isAbsolute (modSourceRelativePath mod)
                                         then modSourcePath mod
                                         else ".../" ++ modSourceRelativePath mod)
-        case checkError (parseProgramFromLexemes (modSource mod) (modLexemes mod)) of
+        parseResult <- statTimed "parse" $
+                       let r = checkError (parseProgramFromLexemes (modSource mod) (modLexemes mod)) in seq r (return r)
+        case parseResult of
           Left errs
             -> done mod{ modPhase  = PhaseParsedError
                        , modErrors = mergeErrors errs (modErrors mod)
@@ -1264,6 +1271,12 @@ addErrorMessageKind ekind doc
   = do rng <- getCurrentRange
        penv <- getPrettyEnv
        addErrorMessage (errorMessageKind ekind rng (doc penv))
+
+-- | Record wall-clock time for a compiler phase into the machine readable
+-- statistics (see `Compile.Stats`).  Modules are compiled concurrently, so
+-- these are per-module sums and can exceed the total elapsed time.
+statTimed :: String -> Build a -> Build a
+statTimed name (Build f) = Build (\env -> statsTimePhase name (f env))
 
 phaseTimed :: Int -> String -> (TP.Env -> Doc) -> Build a -> Build a
 phaseTimed level p doc action

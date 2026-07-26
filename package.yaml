@@ -22,6 +22,15 @@ extra-source-files:
 
 description: Please see the README on GitHub at <https://github.com/koka-lang/koka#readme>
 
+flags:
+  langserver:
+    description: >
+      Build the language-server enabled `koka` executable.  Turning this off
+      builds only `koka-plain`, which is the same compiler without the LSP
+      front end, and drops the dependency on the lsp/lsp-types packages.
+    manual: true
+    default: true
+
 dependencies:
   - base >= 4.9
   - array
@@ -35,6 +44,7 @@ dependencies:
   - FloatingHex >= 0.5
   - hashable >= 1.4
   - directory
+  - filepath
   - process
 
 library:
@@ -120,6 +130,8 @@ executables:
       - '"-with-rtsopts=-N8"'
     when:
       - condition: "arch(wasm32)"
+        buildable: false
+      - condition: "!flag(langserver)"
         buildable: false
 
   koka-plain:
