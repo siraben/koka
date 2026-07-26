@@ -238,18 +238,47 @@ applyProject flags projectDir cacheDir includes native
           }
 
 -- | Build (and possibly run) the executable target.
+--
+-- A package with no `[targets.app]` is a library: every module under its
+-- source directories is compiled, so that a module nothing imports is still
+-- type checked.  `koka run` on such a package is an error, since there is
+-- nothing to run.
 runMain :: Flags -> CompileFn -> FilePath -> Manifest -> IO Bool
 runMain flags compile dir man
   = case tgtMain (manTargets man) of
       Nothing
-        -> failWith ("no executable target: add\n\n  [targets.app]\n  main = \"src/main.kk\"\n\nto "
-                       ++ manifestFileName)
+        | evaluate flags
+          -> failWith ("nothing to run: this package has no executable target."
+                         ++ "\nAdd\n\n  [targets.app]\n  main = \"src/main.kk\"\n\nto "
+                         ++ manifestFileName)
+        | otherwise
+          -> do mods <- projectSourceModules dir man
+                if null mods
+                  then failWith ("no koka sources found under "
+                                   ++ intercalate ", " (manSourceDirs man))
+                  else compile flags{ library = True } mods
       Just m
         -> do let path = dir </> m
               exist <- doesFileExist path
               if not exist
                 then failWith ("executable target " ++ m ++ " does not exist (" ++ path ++ ")")
                 else compile flags [path]
+
+-- | Every `.kk` file under the package's source directories.  Inline C/JS
+-- companions are not modules and are skipped by the extension check.
+projectSourceModules :: FilePath -> Manifest -> IO [FilePath]
+projectSourceModules dir man
+  = do dirs <- filterM doesDirectoryExist (map (dir </>) (manSourceDirs man))
+       fmap (sort . concat) (mapM walk dirs)
+  where
+    walk d
+      = do entries <- listDirectory d
+           fmap concat $ forM (sort entries) $ \e ->
+             do let p = d </> e
+                isDir <- doesDirectoryExist p
+                if isDir
+                  then if isIgnoredEntry e then return [] else walk p
+                  else return [ p | takeExtension e == ".kk" ]
 
 -- | Discover and run tests.  Every `.kk` file under the configured test
 -- directories is a test program: it is compiled and executed, and a non-zero
