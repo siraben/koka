@@ -506,6 +506,19 @@ assert_contains "--locked refuses a lockfile missing a transitive package" \
 cp "$ta/koka.lock.good" "$ta/koka.lock"
 assert_ok "and the intact lockfile still satisfies --locked" run_in "$ta" "$KOKA" build --locked -v0
 
+# Deleting a checksum line is quieter than corrupting one, so it was the
+# better attack: verification simply did not run for that package.
+python3 - "$ta/koka.lock" <<'PYSTRIP'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'\nchecksum = "sha256:[0-9a-f]{64}"', '', s, count=1)
+open(p, 'w').write(s)
+PYSTRIP
+assert_contains "--locked refuses a lock entry with no checksum" \
+                "no checksum recorded" run_in "$ta" "$KOKA" build --locked -v0
+cp "$ta/koka.lock.good" "$ta/koka.lock"
+
 # ---------------------------------------------------------------------------
 group "malformed input is refused, not obeyed"
 
