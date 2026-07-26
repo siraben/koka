@@ -40,3 +40,8 @@ precompiled/
 ghc-rts.wasm
 SETUP.md
 cabal.project.local
+
+# nix
+result
+result-*
+.direnv/

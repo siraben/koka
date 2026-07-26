@@ -1,0 +1,13 @@
+-- Development project file for the plain compiler (no language server).
+--
+-- The default `cabal.project` pulls a forked `lsp` from git, which needs the
+-- network and does not build against this branch.  The language server is out
+-- of scope for this development program, so day-to-day compiler work uses:
+--
+--   cabal build --project-file=cabal.project.plain exe:koka-plain
+--
+-- inside `nix develop`, where every dependency is already in the package db.
+packages: .
+
+package koka
+  flags: -langserver

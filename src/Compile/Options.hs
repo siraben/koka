@@ -11,6 +11,7 @@
 -----------------------------------------------------------------------------
 module Compile.Options( -- * Command line options
                          getOptions, processOptions, Mode(..), Flags(..), showTypeSigs
+                       , ProjectCmd(..), projectCmdName, projectCmdFromString
                        -- * Show standard messages
                        , showHelp, showEnv, showVersion, commandLineHelp, showIncludeInfo
                        -- * Utilities
@@ -56,6 +57,7 @@ import Common.Syntax
 import Common.Error( ErrorMessage )
 import Type.Type( Scheme )
 import Compile.Package
+import Compile.Stats         ( StatsFormat(..), statsFormatFromString )
 import Core.Core( dataInfoIsValue )
 {--------------------------------------------------------------------------
   Convert flags to pretty environment
@@ -128,6 +130,34 @@ data Mode
   | ModeCompiler       { files :: [FilePath] }
   | ModeInteractive    { files :: [FilePath] }
   | ModeLanguageServer { files :: [FilePath] }
+  | ModeProject        { projectCmd :: ProjectCmd, projectArgs :: [String] }
+
+-- | Project subcommands (`koka build`, `koka test`, ...).  Defined here rather
+-- than in `Compile.Project.Command` because `Mode` refers to it and the
+-- project modules import this one.
+data ProjectCmd
+  = ProjInit
+  | ProjFetch
+  | ProjBuild
+  | ProjRun
+  | ProjTest
+  | ProjClean
+  deriving (Eq, Show)
+
+projectCmdName :: ProjectCmd -> String
+projectCmdName c
+  = case c of
+      ProjInit  -> "init"
+      ProjFetch -> "fetch"
+      ProjBuild -> "build"
+      ProjRun   -> "run"
+      ProjTest  -> "test"
+      ProjClean -> "clean"
+
+projectCmdFromString :: String -> Maybe ProjectCmd
+projectCmdFromString s
+  = lookup s [ ("init",ProjInit), ("fetch",ProjFetch), ("build",ProjBuild)
+             , ("run",ProjRun), ("test",ProjTest), ("clean",ProjClean) ]
 
 data Option
   = Interactive
@@ -242,6 +272,13 @@ data Flags
          , useBuildDirHash  :: !Bool
          , outputEntryName :: !String
          , mainEntryName :: !String
+         -- project tooling (`koka build` and friends)
+         , projectLocked    :: !Bool        -- fail rather than update koka.lock
+         , projectOffline   :: !Bool        -- never touch the network
+         , buildProfile     :: !String      -- "debug" | "release"
+         -- machine readable compiler statistics
+         , statsFormat      :: !StatsFormat
+         , statsFile        :: !FilePath    -- empty: write to stdout
          , baseFlags        :: Maybe Flags
          } deriving (Eq,Show)
 
@@ -399,6 +436,11 @@ flagsNull
           True  -- use variant hash
           ""      -- main entry name (null for default for each target)
           ""      -- main target name (null for default)
+          False   -- projectLocked
+          False   -- projectOffline
+          "debug" -- buildProfile
+          StatsNone -- statsFormat
+          ""      -- statsFile (stdout)
           Nothing -- no base flags
 
 
@@ -480,6 +522,16 @@ options = (\(xss,yss) -> (concat xss, concat yss)) $ unzip
  , numOption (-1) "port" []  ["lsport"] (\i f -> f{languageServerPort=i})  "language server localhost port"
  , flag []      ["lsstdio"]             (\b f -> f{languageServerStdio=b}) "use language Server over stdio"
 
+
+ -- project commands: koka init|fetch|build|run|test|clean
+ , flag   []    ["locked"]          (\b f -> f{projectLocked=b})     "fail instead of updating koka.lock"
+ , flag   []    ["offline"]         (\b f -> f{projectOffline=b})    "never access the network"
+ , flag   []    ["release"]         releaseFlag                      "build with optimizations and no debug info"
+ , emptyline
+
+ , option []    ["stats"]           (OptArg statsFlag "fmt")         "emit compiler statistics: <json|text>"
+ , option []    ["stats-file"]      (ReqArg statsFileFlag "file")    "write statistics to <file> instead of stdout"
+ , emptyline
 
  , flag   []    ["html"]            (\b f -> f{outHtml = if b then 2 else 0}) "generate documentation"
  , option []    ["htmlbases"]       (ReqArg htmlBasesFlag "bases")  "set link prefixes for documentation"
@@ -593,6 +645,22 @@ options = (\(xss,yss) -> (concat xss, concat yss)) $ unzip
   targetArchs :: [String]
   targetArchs
     = ["x64","arm64","x86","riscv64","riscv32"]
+
+  -- `--release` is a profile switch: it selects full optimization, drops debug
+  -- info, and names the profile so that the project build cache keys on it.
+  releaseFlag b f
+    = if b then f{ buildProfile = "release", optimize = max 2 (optimize f), debug = False }
+           else f{ buildProfile = "debug" }
+
+  statsFlag mbs
+    = case statsFormatFromString (maybe "" id mbs) of
+        Just fmt -> Flag (\f -> f{ statsFormat = fmt })
+        Nothing  -> Error "invalid value for --stats option, expecting any of (json|text|none)"
+
+  statsFileFlag s
+    = Flag (\f -> f{ statsFile = s, statsFormat = case statsFormat f of
+                                                    StatsNone -> StatsJson
+                                                    fmt       -> fmt })
 
   colorFlag s
     = Flag (\f -> f{ colorScheme = readColorFlags s (colorScheme f) })
@@ -846,8 +914,13 @@ processInitialOptions :: Flags -> [String] -> IO (Flags,Mode)
 processInitialOptions flags0 opts
   = case parseOptions flags0 opts of
       Left err -> invokeError [err]
-      Right (flags1,mode)
+      Right (flags1,mode0)
         -> do arch <- if (null (targetArch flags1)) then getTargetArch else return hostArch
+              -- A project subcommand name that also names a source file in the
+              -- current directory is treated as the file: `koka build` is the
+              -- subcommand, `koka build.kk` (or `koka build` next to a
+              -- `build.kk`) still compiles the module.
+              mode <- disambiguateProjectMode mode0
               let flags = case mode of
                             ModeInteractive _    -> flags1{evaluate = True, targetArch = arch }
                             ModeLanguageServer _ -> flags1{genRangeMap = True, targetArch = arch }
@@ -887,6 +960,15 @@ processInitialOptions flags0 opts
                               }
               return (flagsx,mode)
 
+-- | Resolve the one ambiguity introduced by project subcommands.
+disambiguateProjectMode :: Mode -> IO Mode
+disambiguateProjectMode mode@(ModeProject cmd rest)
+  = do let name = projectCmdName cmd
+       isFile <- doesFileExist name
+       isKk   <- doesFileExist (name ++ ".kk")
+       return (if isFile || isKk then ModeCompiler (name : rest) else mode)
+disambiguateProjectMode mode = return mode
+
 parseOptions :: Flags -> [String] -> Either String (Flags,Mode)
 parseOptions flags0 opts
   = let (preOpts,postOpts) = span (/="--") opts
@@ -900,8 +982,11 @@ parseOptions flags0 opts
                           else if (any isVersion options) then ModeVersion
                           else if (any isInteractive options) then ModeInteractive files
                           else if (any isLanguageServer options) then ModeLanguageServer files
-                          else if (null files) then ModeInteractive files
-                                              else ModeCompiler files
+                          else case files of
+                                 (f:rest) | Just cmd <- projectCmdFromString f
+                                          -> ModeProject cmd rest
+                                 []       -> ModeInteractive files
+                                 _        -> ModeCompiler files
               in Right (extractFlags flags1 options,mode)
          else Left (concat errs)
 
