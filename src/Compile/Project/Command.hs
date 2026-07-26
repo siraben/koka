@@ -325,14 +325,15 @@ runTests flags compile dir man
 -- | Build one test program and run it ourselves.
 --
 -- We do not use the compiler's own `--execute`, because a test runner has to
--- see how the program ended and `--execute` does not surface that.  Two things
--- count as a failure:
+-- see how the program ended and `--execute` does not surface that.
 --
---   * a non-zero exit status (what the test framework uses to report
---     assertion failures);
---   * the runtime's `uncaught exception:` marker, because Koka's default
---     exception handler prints it and then exits *successfully* -- a crashed
---     test must never be reported as passing.
+-- A non-zero exit status is the only failure signal, which is what it should
+-- be.  This used to also grep the program's output for the runtime's
+-- `uncaught exception:` marker, because the default exception handler printed
+-- it and then exited *successfully* -- so a crashed test looked like a passing
+-- one.  That is fixed in `std/core` (`@default-exn` now exits non-zero), and
+-- with it goes the string match, which could never distinguish a test that
+-- crashed from one that legitimately printed those words.
 runOneTest :: Flags -> CompileFn -> FilePath -> IO Bool
 runOneTest flags compile f
   = do built <- compile flags{ evaluate = False } [f]
@@ -346,10 +347,7 @@ runOneTest flags compile f
                    else do (code,out,err) <- readProcessWithExitCode exe [] ""
                            putStr out
                            hPutStr stderr err
-                           let crashed = "uncaught exception:" `isInfixOf` (out ++ err)
-                           when crashed $
-                             hPutStrLn stderr "test ended with an uncaught exception"
-                           return (code == ExitSuccess && not crashed)
+                           return (code == ExitSuccess)
 
 relativeTo :: FilePath -> FilePath -> FilePath
 relativeTo base p
