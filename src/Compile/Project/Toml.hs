@@ -26,7 +26,7 @@ module Compile.Project.Toml
   ) where
 
 import Data.Char        ( isAlphaNum, isDigit )
-import Data.List        ( intercalate )
+import Data.List        ( intercalate, nub )
 import Text.Parsec
 import Text.Parsec.String ( Parser )
 
@@ -86,13 +86,27 @@ parseToml fname input
       Left err  -> Left (show err)
       Right tbl -> Right tbl
 
+-- A duplicate key is an error, not a silent choice.  `lookup` returns the
+-- first binding, so `name = "safe"` followed by `name = "other"` parsed
+-- cleanly and quietly used "safe" -- a manifest could say one thing and mean
+-- another with nothing to show for it.
 pDocument :: Parser TomlTable
 pDocument
   = do skipTrivia
        top     <- many (pPair <* skipTrivia)
        tables  <- many (pTableSection <* skipTrivia)
        eof
-       return (top ++ mergeSections tables)
+       let merged = top ++ mergeSections tables
+       case duplicates (map fst top) of
+         (k:_) -> fail ("duplicate key '" ++ k ++ "'")
+         []    -> case concatMap (dupsIn . snd) merged of
+                    (k:_) -> fail ("duplicate key '" ++ k ++ "'")
+                    []    -> return merged
+  where
+    duplicates ks = [ k | (k,n) <- counts ks, n > (1::Int) ]
+    counts ks     = [ (k, length (filter (== k) ks)) | k <- nub ks ]
+    dupsIn (TomlTableV t) = duplicates (map fst t) ++ concatMap (dupsIn . snd) t
+    dupsIn _              = []
 
 -- Table headers are dotted paths; nest them into a tree so that
 -- `[targets.app]` becomes targets -> app -> {...}.
@@ -154,12 +168,16 @@ pBool
   =   (TomlBool True  <$ try (string "true"))
   <|> (TomlBool False <$ try (string "false"))
 
+-- Underscores are separators, so they are only legal *between* digits.  The
+-- old grammar accepted a run of them with no digit at all, and `version = _`
+-- then reached `read ""`, which is partial: reading a lockfile aborted the
+-- process with an exception instead of reporting a parse error.
 pInt :: Parser TomlValue
 pInt
   = do sign   <- option "" (string "-" <|> string "+")
-       digits <- many1 (satisfy (\c -> isDigit c || c == '_'))
-       let ds = filter (/= '_') digits
-       return (TomlInt (read (if sign == "-" then '-':ds else ds)))
+       d0     <- satisfy isDigit
+       rest   <- many (try (many (char '_') >> satisfy isDigit))
+       return (TomlInt (read (if sign == "-" then '-':d0:rest else d0:rest)))
 
 pArray :: Parser TomlValue
 pArray

@@ -24,6 +24,7 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Base16 as B16
 
 import Control.Monad      ( forM, filterM )
+import Data.Bits          ( (.&.), (.|.), shiftR )
 import Data.List          ( sort, isSuffixOf )
 import System.Directory   ( doesDirectoryExist, doesFileExist, listDirectory
                           , pathIsSymbolicLink )
@@ -34,13 +35,34 @@ hashBytes :: BS.ByteString -> String
 hashBytes = BC.unpack . B16.encode . SHA256.hash
 
 hashString :: String -> String
-hashString = hashBytes . BC.pack
+hashString = hashBytes . utf8
+
+-- | UTF-8 encode.
+--
+-- `Data.ByteString.Char8.pack` truncates every `Char` to eight bits, so
+-- @"A.kk"@ and @"\321.kk"@ hashed identically -- two different source paths,
+-- two different URLs, or two different rendered locks could share a checksum.
+-- Encoded properly, they cannot.
+utf8 :: String -> BS.ByteString
+utf8 = BS.pack . concatMap enc
+  where
+    enc c
+      | n < 0x80    = [ fromIntegral n ]
+      | n < 0x800   = [ 0xC0 .|. lead 6,  cont 0 ]
+      | n < 0x10000 = [ 0xE0 .|. lead 12, cont 6,  cont 0 ]
+      | otherwise   = [ 0xF0 .|. lead 18, cont 12, cont 6, cont 0 ]
+      where
+        n       = fromEnum c
+        lead sh = fromIntegral (n `shiftR` sh)
+        cont sh = 0x80 .|. fromIntegral ((n `shiftR` sh) .&. 0x3F)
 
 -- | Hash a list of strings unambiguously: each item is prefixed with its
--- length so that @["ab","c"]@ and @["a","bc"]@ hash differently.
+-- encoded byte length so that @["ab","c"]@ and @["a","bc"]@ hash differently.
+-- The length counts octets, not `Char`s, so it stays unambiguous for non-ASCII.
 hashStrings :: [String] -> String
 hashStrings ss
-  = hashBytes (BS.concat [ BC.pack (show (length s) ++ ":" ++ s) | s <- ss ])
+  = hashBytes (BS.concat [ BS.concat [BC.pack (show (BS.length e) ++ ":"), e]
+                         | s <- ss, let e = utf8 s ])
 
 -- | Directory entries that never contribute to a content hash: version
 -- control metadata, build output, and editor droppings.  Excluding these is
