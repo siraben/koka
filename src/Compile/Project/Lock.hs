@@ -182,8 +182,12 @@ writeLock path lk
 
 -- | Does the lockfile still describe this manifest's direct dependencies?
 -- Returns a human readable reason when it does not.
-lockMatchesManifest :: Manifest -> Lock -> Either String ()
-lockMatchesManifest man lk
+--
+-- Path dependencies are compared after normalising both sides to the project
+-- root, because the same package can be spelled differently from different
+-- packages and the lockfile records the project-relative form.
+lockMatchesManifest :: FilePath -> Manifest -> Lock -> Either String ()
+lockMatchesManifest projectDir man lk
   = do if lockRoot lk /= manName man
          then Left ("lockfile is for package '" ++ lockRoot lk
                       ++ "' but the manifest declares '" ++ manName man ++ "'")
@@ -194,8 +198,29 @@ lockMatchesManifest man lk
       = case lockEntryFor lk (depName d) of
           Nothing -> Left ("dependency '" ++ depName d ++ "' is in " ++ manifestFileName
                              ++ " but not in " ++ lockFileName)
-          Just e | lockSource e /= depSource d
+          Just e | not (sameSource projectDir (manRoot man) (lockSource e) (depSource d))
                  -> Left ("dependency '" ++ depName d ++ "' changed in " ++ manifestFileName
                             ++ " (" ++ depSourceKey (depSource d) ++ ") but "
                             ++ lockFileName ++ " records " ++ depSourceKey (lockSource e))
                  | otherwise -> Right ()
+
+-- Two sources are the same package when they resolve to the same directory.
+sameSource :: FilePath -> FilePath -> DepSource -> DepSource -> Bool
+sameSource projectDir manDir a b
+  = resolve a == resolve b
+  where
+    resolve (DepGit u r) = "git:" ++ u ++ "#" ++ r
+    resolve (DepPath p)  = "path:" ++ collapse (base p ++ "/" ++ p)
+    -- lock entries are project-relative, manifest entries are manifest-relative;
+    -- for the root manifest those are the same directory
+    base _ = if projectDir == manDir then projectDir else manDir
+
+    collapse = intercalate "/" . foldl step [] . splitOn '/'
+    step acc "."  = acc
+    step acc ""   = acc
+    step acc ".." = if null acc || last acc == ".." then acc ++ [".."] else init acc
+    step acc x    = acc ++ [x]
+
+    splitOn c str = case break (== c) str of
+                      (a', [])     -> [a']
+                      (a', _:rest) -> a' : splitOn c rest
