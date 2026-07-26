@@ -26,6 +26,7 @@ import System.IO          ( hPutStrLn, stderr, stdout )
 import System.IO.Error    ( catchIOError )
 import System.Process     ( readProcessWithExitCode )
 
+import Platform.Config    ( version )
 import Common.Syntax      ( Target(..) )
 import Compile.Options
 import Compile.Project.Manifest
