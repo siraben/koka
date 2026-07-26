@@ -27,6 +27,7 @@ module Compile.Project.Lock
   , lockMatchesManifest
   ) where
 
+import Data.Char        ( isHexDigit )
 import Data.List        ( sortOn, intercalate, sort )
 import Data.Maybe       ( fromMaybe )
 import System.Directory ( doesFileExist )
@@ -102,6 +103,11 @@ parseLock path content
   where
     corrupt msg = Left (path ++ ": corrupt lockfile: " ++ msg)
 
+    validChecksum s
+      = case splitAt 7 s of
+          ("sha256:", h) -> length h == 64 && all isHexDigit h
+          _              -> False
+
     str t p = case tomlLookup t p >>= tomlString of
                 Just s  -> Right s
                 Nothing -> corrupt ("missing or non-string '" ++ intercalate "." p ++ "'")
@@ -121,7 +127,17 @@ parseLock path content
                                     (Just u, Just r) -> Right (DepGit u r)
                                     _ -> corrupt ("packages." ++ name ++ " is missing 'url' or 'rev'")
                         other  -> corrupt ("packages." ++ name ++ " has unknown kind '" ++ other ++ "'")
-               let sum' = fromMaybe "" (lookup "checksum" t >>= tomlString)
+               -- Absent is fine (nothing to verify against).  Present but not a
+               -- `sha256:<64 hex>` string is corruption, and silently turning it
+               -- into "" skipped verification altogether -- which is exactly what
+               -- an attacker editing a lockfile would want it to do.
+               sum' <- case lookup "checksum" t of
+                         Nothing -> Right ""
+                         Just v  -> case tomlString v of
+                                      Just s | validChecksum s -> Right s
+                                             | otherwise -> corrupt ("packages." ++ name
+                                                   ++ ".checksum must look like \"sha256:<64 hex digits>\"")
+                                      Nothing -> corrupt ("packages." ++ name ++ ".checksum must be a string")
                deps <- case lookup "dependencies" t of
                          Nothing -> Right []
                          Just v  -> case tomlStringList v of
