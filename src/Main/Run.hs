@@ -117,7 +117,6 @@ withStats flags action
        ok <- action
        t1 <- getCurrentTime
        statsSetTotal (realToFrac (diffUTCTime t1 t0) * 1000.0)
-       statsRecordArtifacts (fullBuildDir flags) (outFinalPath flags)
        statsEmit (statsFormat flags) (statsFile flags) version (show (target flags))
        return ok
 
@@ -141,6 +140,9 @@ compileAll p flags fpaths
                           mapM_ (compileShowInfo buildc) roots
                           buildcFlushErrors buildc -- for warnings
                           return runs
+       -- artifact sizes must be measured with the *effective* flags: a project
+       -- build redirects the build directory, so `flags` here is what counts.
+       statsRecordArtifacts (fullBuildDir flags) (outFinalPath flags)
        case mbRuns of
          Just runs -> do when (evaluate flags) $ sequence_ runs
                          return True
@@ -169,7 +171,8 @@ compileEntry buildc entry
   = do (buildc',mbTpEntry) <- buildcCompileEntry False entry buildc
        buildcThrowOnError buildc'
        case mbTpEntry of
-         Just(_,Just(_,run)) -> return run
+         Just(_,Just(exe,run)) -> do buildLiftIO (statsRecordExe exe)
+                                     return run
          _                   -> do flags <- buildcFlags
                                    when (null (outputEntryName flags)) $
                                      addErrorMessageKind ErrBuild (\penv -> text "unable to find main entry point" <+> ppName penv entry)

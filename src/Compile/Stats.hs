@@ -26,6 +26,7 @@ module Compile.Stats
   , statsAddPhase
   , statsSetTotal
   , statsRecordArtifacts
+  , statsRecordExe
   , statsCollect
   , statsToJson
   , statsToText
@@ -33,10 +34,10 @@ module Compile.Stats
   ) where
 
 import Data.IORef
-import Data.List          ( sortOn, isSuffixOf, foldl' )
+import Data.List          ( sortOn, isSuffixOf, foldl', intercalate )
 import Data.Time.Clock    ( getCurrentTime, diffUTCTime, UTCTime )
 import Control.Exception  ( finally )
-import Control.Monad      ( when, forM, filterM )
+import Control.Monad      ( when, unless, forM, filterM )
 import System.IO          ( hPutStrLn, stdout, withFile, IOMode(..) )
 import System.IO.Error    ( catchIOError )
 import System.IO.Unsafe   ( unsafePerformIO )
@@ -44,8 +45,6 @@ import System.Directory   ( doesDirectoryExist, doesFileExist, getFileSize
                           , listDirectory )
 import System.FilePath    ( (</>) )
 import qualified Data.Map.Strict as M
-
-import Lib.JSON           ( JsValue(..) )
 
 -----------------------------------------------------------------------------
 -- Configuration
@@ -141,12 +140,20 @@ statsRecordArtifacts outdir exePath
   = do enabled <- readIORef theEnabled
        when enabled $
          do (n,bytes) <- measureGeneratedC outdir
-            exeBytes  <- fileSizeOr0 exePath
             atomicModifyIORef' theStats $ \st ->
-              (st{ statsCFiles   = n
-                 , statsCBytes   = bytes
-                 , statsExePath  = exePath
-                 , statsExeBytes = exeBytes }, ())
+              (st{ statsCFiles = n, statsCBytes = bytes }, ())
+            unless (null exePath) (statsRecordExe exePath)
+
+-- | Record the final executable.  The path is only known once an entry point
+-- has actually been linked, which is later than when the build directory is
+-- known, so it is recorded separately.
+statsRecordExe :: FilePath -> IO ()
+statsRecordExe exePath
+  = do enabled <- readIORef theEnabled
+       when enabled $
+         do bytes <- fileSizeOr0 exePath
+            atomicModifyIORef' theStats $ \st ->
+              (st{ statsExePath = exePath, statsExeBytes = bytes }, ())
 
 -- | Sum the size of every generated .c/.h file under a directory.
 measureGeneratedC :: FilePath -> IO (Int,Integer)
@@ -188,40 +195,62 @@ orElse action def
 statsCollect :: IO Stats
 statsCollect = readIORef theStats
 
-statsToJson :: String -> String -> Stats -> JsValue
+-- | Render as a single line of JSON.  Machine readable output should be one
+-- object per line so that it can be piped straight into `jq`.
+statsToJson :: String -> String -> Stats -> String
 statsToJson kokaVersion targetName st
-  = JsObject
-      [ ("koka_version", JsString kokaVersion)
-      , ("target",       JsString targetName)
-      , ("total_ms",     JsDouble (roundMs (maybe 0 id (statsTotalMs st))))
-      , ("phases",       JsArray (map phaseJson (sortOn fst (M.toList (statsPhases st)))))
-      , ("generated_c",  JsObject [ ("files", JsInt (fromIntegral (statsCFiles st)))
-                                  , ("bytes", JsInt (statsCBytes st)) ])
-      , ("executable",   JsObject [ ("path",  JsString (statsExePath st))
-                                  , ("bytes", JsInt (statsExeBytes st)) ])
+  = jobj
+      [ ("koka_version", jstr kokaVersion)
+      , ("target",       jstr targetName)
+      , ("total_ms",     jnum (maybe 0 id (statsTotalMs st)))
+      , ("phases",       jarr (map phaseJson (sortOn fst (M.toList (statsPhases st)))))
+      , ("generated_c",  jobj [ ("files", show (statsCFiles st))
+                              , ("bytes", show (statsCBytes st)) ])
+      , ("executable",   jobj [ ("path",  jstr (statsExePath st))
+                              , ("bytes", show (statsExeBytes st)) ])
       ]
   where
     phaseJson (name,(ms,n))
-      = JsObject [ ("name",    JsString name)
-                 , ("wall_ms", JsDouble (roundMs ms))
-                 , ("count",   JsInt (fromIntegral n)) ]
+      = jobj [ ("name", jstr name), ("wall_ms", jnum ms), ("count", show n) ]
 
-roundMs :: Double -> Double
-roundMs d = fromIntegral (round (d * 1000) :: Integer) / 1000.0
+jobj :: [(String,String)] -> String
+jobj kvs = "{" ++ intercalate "," [ jstr k ++ ":" ++ v | (k,v) <- kvs ] ++ "}"
+
+jarr :: [String] -> String
+jarr vs = "[" ++ intercalate "," vs ++ "]"
+
+jstr :: String -> String
+jstr s = '"' : concatMap esc s ++ "\""
+  where
+    esc '"'  = "\\\""
+    esc '\\' = "\\\\"
+    esc '\n' = "\\n"
+    esc '\t' = "\\t"
+    esc '\r' = "\\r"
+    esc c    = [c]
+
+-- | Milliseconds with three decimals, never in exponent notation (some JSON
+-- consumers are picky, and it reads better in a diff).
+jnum :: Double -> String
+jnum d
+  = let neg    = d < 0
+        scaled = round (abs d * 1000) :: Integer
+        (i,f)  = scaled `divMod` 1000
+        frac   = let s = show f in replicate (3 - length s) '0' ++ s
+    in (if neg then "-" else "") ++ show i ++ "." ++ frac
 
 statsToText :: String -> String -> Stats -> String
 statsToText kokaVersion targetName st
   = unlines $
     [ "koka " ++ kokaVersion ++ " (" ++ targetName ++ ")"
-    , "total          " ++ showMs (maybe 0 id (statsTotalMs st))
+    , "total          " ++ jnum (maybe 0 id (statsTotalMs st)) ++ "ms"
     ] ++
-    [ "  " ++ pad 12 name ++ " " ++ showMs ms ++ "  (" ++ show n ++ ")"
+    [ "  " ++ pad 12 name ++ " " ++ jnum ms ++ "ms  (" ++ show n ++ " modules)"
     | (name,(ms,n)) <- sortOn fst (M.toList (statsPhases st)) ] ++
     [ "generated c    " ++ show (statsCFiles st) ++ " files, " ++ show (statsCBytes st) ++ " bytes" ] ++
-    [ "executable     " ++ show (statsExeBytes st) ++ " bytes"
+    [ "executable     " ++ show (statsExeBytes st) ++ " bytes  " ++ statsExePath st
     | not (null (statsExePath st)) ]
   where
-    showMs d = show (roundMs d) ++ "ms"
     pad n s  = s ++ replicate (n - length s) ' '
 
 -- | Emit the collected statistics in the requested format.  An empty path
@@ -231,7 +260,7 @@ statsEmit StatsNone _ _ _ = return ()
 statsEmit fmt path kokaVersion targetName
   = do st <- statsCollect
        let out = case fmt of
-                   StatsJson -> show (statsToJson kokaVersion targetName st)
+                   StatsJson -> statsToJson kokaVersion targetName st
                    StatsText -> init (statsToText kokaVersion targetName st)
                    StatsNone -> ""
        if null path
