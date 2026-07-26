@@ -11,7 +11,7 @@ Scope is deliberately narrow.  Anything not needed by that service is out.
 | 1. Engineering baseline      | done |
 | 2. Project and package tooling | done |
 | 3. Foundational libraries    | done |
-| 4. HTTP/JSON/SQLite service  | in progress |
+| 4. HTTP/JSON/SQLite service  | built, one blocking defect |
 
 ---
 
@@ -80,13 +80,16 @@ Done (59 tests, clean under ASan/UBSan/LSan):
 - [x] bounded channels with producer backpressure and no silent loss
 - [x] JSON: value type, parser with limits and source positions, generator
 
-Remaining:
+- [x] HTTP/1.1 server subset with conservative limits and a minimal router
+- [x] SQLite bindings: prepared statements, transactions, migrations
+- [x] structured logging as an effect
+- [x] the reference service, its unit tests, and its integration/stress suite
+- [x] `koka-examples` repository and its documentation
 
-- [ ] HTTP/1.1 server subset with conservative limits and a minimal router
-- [ ] SQLite bindings: prepared statements, transactions, migrations
-- [ ] structured logging as an effect
-- [ ] the reference service and its unit, integration, and stress tests
-- [ ] `koka-examples` repository and its documentation
+**Not yet passing:** the reference service serves every request correctly and
+33 of its integration assertions pass, but a burst of concurrent connections
+makes the server shut itself down. See the service README for exactly what has
+been ruled out. Milestone 4's acceptance criteria are therefore not met.
 
 ---
 
