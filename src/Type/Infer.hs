@@ -2016,6 +2016,13 @@ inferImplicitParam par
                            binderExpr = Nothing }, unpack)
      else return (par, id)
 
+-- | Show a parameter name as the user writes it: an implicit parameter is
+-- stored as @\@implicit/name@ but written and read as @?name@.
+ppUserName :: Name -> Doc
+ppUserName nm
+  | isImplicitParamName nm = text "?" <.> pretty (fromImplicitParamName nm)
+  | otherwise              = pretty nm
+
 qualifyUnpacked :: Name -> Name -> Name
 qualifyUnpacked pname fname = (qualifyLocally (nameAsModuleName $ fromImplicitParamName pname) fname)
 
@@ -2526,7 +2533,8 @@ matchFunTypeArgs context fun tp fresolved fixed named
     matchNamed pars ((i,((name,rng),arg)):named)
       = case extract name [] pars of
           Nothing -> do -- trace ("matchNamed: no parameter with name " ++ show name ++ " in " ++ show pars) $ return ()
-                        typeError context (getRange fun) (text "there is no parameter with name" <+> pretty name) tp []
+                        -- `pretty` would show the internal encoding of an implicit
+                        typeError context (getRange fun) (text "there is no parameter with name" <+> ppUserName name) tp []
                         matchNamed pars named
           Just (j,tp,pars1)
               -> do newarg  <- if (isOptional tp)
