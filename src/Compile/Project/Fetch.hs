@@ -215,9 +215,14 @@ materialize opts projectDir mbLock dep
     -- A recorded checksum that no longer matches means the dependency's
     -- contents changed underneath a pin.  For git that should be impossible;
     -- for a path dependency it is expected and only an error under --locked.
+    --
+    -- The comparison only applies when the lock entry describes the *same*
+    -- source: if the manifest moved the pin to another commit, the recorded
+    -- checksum belongs to the old commit and is simply superseded.
     verify name actual
       = case mbLock >>= \lk -> lockEntryFor lk name of
-          Just e | not (null (lockChecksum e)) && not (null actual)
+          Just e | lockSource e == depSource dep
+                 , not (null (lockChecksum e)) && not (null actual)
                  , lockChecksum e /= actual
                  -> case depSource dep of
                       DepGit _ rev

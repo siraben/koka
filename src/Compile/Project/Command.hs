@@ -15,14 +15,14 @@ module Compile.Project.Command
 import Control.Monad      ( when, unless, forM, forM_, filterM, foldM )
 import Data.Char          ( toLower )
 import Data.IORef
-import Data.List          ( sort, isSuffixOf, isPrefixOf, intercalate, nub )
+import Data.List          ( sort, isSuffixOf, isPrefixOf, isInfixOf, intercalate, nub )
 import Data.Maybe         ( fromMaybe, catMaybes, isJust )
 import System.Directory   ( doesDirectoryExist, doesFileExist, createDirectoryIfMissing
                           , getCurrentDirectory, canonicalizePath, listDirectory )
 import System.Exit        ( ExitCode(..) )
 import System.FilePath    ( (</>), (<.>), takeDirectory, takeBaseName, takeFileName
                           , takeExtension, isDrive, normalise, splitDirectories )
-import System.IO          ( hPutStrLn, stderr, stdout )
+import System.IO          ( hPutStr, hPutStrLn, stderr, stdout )
 import System.IO.Error    ( catchIOError )
 import System.Process     ( readProcessWithExitCode )
 
@@ -33,6 +33,7 @@ import Compile.Project.Manifest
 import Compile.Project.Lock
 import Compile.Project.Fetch
 import Compile.Project.Cache
+import Compile.Stats      ( statsGetLastExe )
 import Compile.Project.Hash
 
 -----------------------------------------------------------------------------
@@ -266,7 +267,7 @@ runTests flags compile dir man
                             ++ (if length files == 1 then "program" else "programs"))
                  results <- forM files $ \f ->
                               do putStrLn ("test: " ++ relativeTo dir f)
-                                 ok <- compile flags{ evaluate = True } [f]
+                                 ok <- runOneTest flags compile f
                                  unless ok $
                                    hPutStrLn stderr ("FAILED: " ++ relativeTo dir f)
                                  return (f, ok)
@@ -285,6 +286,35 @@ runTests flags compile dir man
                 if isDir
                   then if isIgnoredEntry e then return [] else findTests p
                   else return [ p | takeExtension e == ".kk", not ("_" `isPrefixOf` e) ]
+
+-- | Build one test program and run it ourselves.
+--
+-- We do not use the compiler's own `--execute`, because a test runner has to
+-- see how the program ended and `--execute` does not surface that.  Two things
+-- count as a failure:
+--
+--   * a non-zero exit status (what the test framework uses to report
+--     assertion failures);
+--   * the runtime's `uncaught exception:` marker, because Koka's default
+--     exception handler prints it and then exits *successfully* -- a crashed
+--     test must never be reported as passing.
+runOneTest :: Flags -> CompileFn -> FilePath -> IO Bool
+runOneTest flags compile f
+  = do built <- compile flags{ evaluate = False } [f]
+       if not built
+         then return False
+         else do exe <- statsGetLastExe
+                 if null exe
+                   then do hPutStrLn stderr ("no executable was produced for " ++ f
+                                               ++ " (does it define `main`?)")
+                           return False
+                   else do (code,out,err) <- readProcessWithExitCode exe [] ""
+                           putStr out
+                           hPutStr stderr err
+                           let crashed = "uncaught exception:" `isInfixOf` (out ++ err)
+                           when crashed $
+                             hPutStrLn stderr "test ended with an uncaught exception"
+                           return (code == ExitSuccess && not crashed)
 
 relativeTo :: FilePath -> FilePath -> FilePath
 relativeTo base p

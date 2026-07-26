@@ -27,6 +27,7 @@ module Compile.Stats
   , statsSetTotal
   , statsRecordArtifacts
   , statsRecordExe
+  , statsGetLastExe
   , statsCollect
   , statsToJson
   , statsToText
@@ -87,6 +88,16 @@ statsNil = Stats M.empty Nothing 0 0 "" 0
 {-# NOINLINE theStats #-}
 theStats :: IORef Stats
 theStats = unsafePerformIO (newIORef statsNil)
+
+-- | The last executable the build linked.  Recorded unconditionally (not only
+-- when statistics are enabled) because `koka test` needs it to run each test
+-- program itself and inspect its exit status.
+{-# NOINLINE theLastExe #-}
+theLastExe :: IORef FilePath
+theLastExe = unsafePerformIO (newIORef "")
+
+statsGetLastExe :: IO FilePath
+statsGetLastExe = readIORef theLastExe
 
 {-# NOINLINE theEnabled #-}
 theEnabled :: IORef Bool
@@ -149,7 +160,8 @@ statsRecordArtifacts outdir exePath
 -- known, so it is recorded separately.
 statsRecordExe :: FilePath -> IO ()
 statsRecordExe exePath
-  = do enabled <- readIORef theEnabled
+  = do writeIORef theLastExe exePath
+       enabled <- readIORef theEnabled
        when enabled $
          do bytes <- fileSizeOr0 exePath
             atomicModifyIORef' theStats $ \st ->
