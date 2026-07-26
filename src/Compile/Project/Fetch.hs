@@ -129,12 +129,17 @@ resolveWith opts projectDir root mbLock
     -- Depth-first walk with cycle detection.  `seen` maps a package name to
     -- the source it was first resolved from, so two different pins of the
     -- same name are reported instead of silently picking one.
+    --
+    -- `base` is the directory a path dependency is relative *to*: the project
+    -- root for a direct dependency, and the dependency's own directory for a
+    -- transitive one.  Resolving everything against the root would break as
+    -- soon as two packages sit in different directories.
     walk lk
-      = do res <- foldM (step lk []) (Right ([], [])) (manDeps root)
+      = do res <- foldM (step lk projectDir []) (Right ([], [])) (manDeps root)
            return (fmap (reverse . fst) res)
 
-    step _ _ acc@(Left _) _ = return acc
-    step lk stack (Right (done, seen)) dep
+    step _ _ _ acc@(Left _) _ = return acc
+    step lk base stack (Right (done, seen)) dep
       = do let name = depName dep
            if name `elem` stack
              then return (Left ("dependency cycle: "
@@ -147,11 +152,11 @@ resolveWith opts projectDir root mbLock
                                            ++ "\n  " ++ depSourceKey (depSource dep)))
                       | otherwise -> return (Right (done, seen))
                     Nothing
-                      -> do mb <- materialize opts projectDir lk dep
+                      -> do mb <- materialize opts base projectDir lk dep
                             case mb of
                               Left err -> return (Left err)
                               Right rd ->
-                                do inner <- foldM (step lk (name:stack))
+                                do inner <- foldM (step lk (rdDir rd) (name:stack))
                                                   (Right (done, (name, depSource dep):seen))
                                                   (manDeps (rdManifest rd))
                                    return (fmap (\(d2,s2) -> (rd:d2, s2)) inner)
@@ -167,11 +172,14 @@ depCheckoutDir :: FilePath -> String -> String -> FilePath
 depCheckoutDir projectDir name rev
   = projectDir </> ".koka" </> "deps" </> (name ++ "-" ++ take 12 rev)
 
-materialize :: ResolveOptions -> FilePath -> Maybe Lock -> Dep -> IO (Either String ResolvedDep)
-materialize opts projectDir mbLock dep
+-- `base` is what a relative path dependency is resolved against; `projectDir`
+-- is still where git checkouts are stored, so a project has one dependency
+-- cache no matter how deep the graph goes.
+materialize :: ResolveOptions -> FilePath -> FilePath -> Maybe Lock -> Dep -> IO (Either String ResolvedDep)
+materialize opts base projectDir mbLock dep
   = case depSource dep of
       DepPath rel
-        -> do let dir = if isAbsolute rel then rel else normalise (projectDir </> rel)
+        -> do let dir = if isAbsolute rel then rel else normalise (base </> rel)
               exist <- doesDirectoryExist dir
               if not exist
                 then return (Left ("path dependency '" ++ depName dep ++ "' not found: " ++ dir))
