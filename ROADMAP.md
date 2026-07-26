@@ -1,5 +1,16 @@
 # Roadmap
 
+Repositories, all under `siraben/`:
+
+| repository      | contents                                    |
+| --------------- | ------------------------------------------- |
+| `koka`          | this compiler fork; `upstream` is read-only |
+| `koka-packages` | the eleven library packages                 |
+| `koka-examples` | the notes reference service                 |
+
+`upstream` is `koka-lang/koka` with its push URL set to an invalid value, so a
+stray push cannot reach it.
+
 Target: **a Koka HTTP/JSON service backed by SQLite**, with concurrent request
 handling, cancellation, reliable resource cleanup, testing, and reproducible
 dependencies.

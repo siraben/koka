@@ -1,6 +1,6 @@
 # Building this branch
 
-This is the private development branch of the Koka compiler used for the
+This is the development branch of the Koka compiler used for the
 Milestone-4 engineering program (an HTTP/JSON service on SQLite).  It differs
 from upstream in two ways that matter for building:
 
@@ -62,10 +62,12 @@ rely on the submodule being checked out — it pins the same commit explicitly i
 
 Remotes on this branch:
 
-* `origin` — the private mirror.  All work goes here.
+* `origin` — `siraben/koka`, the owner's fork, with `dev` as its default
+  branch.  All work goes here.  It is **public** by the owner's explicit
+  decision; the compiler is Apache-2.0 and this branch adds no secrets.
 * `upstream` — the public `koka-lang/koka` repository, **read only**.  Its push
   URL is deliberately set to an invalid value so a stray `git push upstream`
-  fails instead of reaching the public repo.
+  fails instead of reaching it.  Pull requests are never opened.
 
 ---
 
