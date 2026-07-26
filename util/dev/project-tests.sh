@@ -433,6 +433,79 @@ nowhere="$root/nowhere"
 mkdir -p "$nowhere"
 assert_contains "a missing manifest is reported" "koka.toml" run_in "$nowhere" "$KOKA" build -v0
 
+# A dependency of a dependency that moves must be caught by --locked.  Only the
+# root manifest's direct dependencies were compared, so this drifted silently:
+# the new package was fetched, built and linked, and the lockfile still claimed
+# the old graph.
+group "--locked covers the whole graph"
+
+tl="$root/translib"; tm="$root/transmid"; ta="$root/transapp"
+mkdir -p "$tl/src/tl" "$tm/src/tm" "$ta/src"
+cat > "$tl/koka.toml" <<'EOF'
+[package]
+name = "tl"
+version = "0.1.0"
+[sources]
+directories = ["src"]
+EOF
+printf 'pub fun v() : int
+  1
+' > "$tl/src/tl/v.kk"
+
+cat > "$tm/koka.toml" <<'EOF'
+[package]
+name = "tm"
+version = "0.1.0"
+[sources]
+directories = ["src"]
+[dependencies]
+tl = { path = "../translib" }
+EOF
+printf 'import tl/v
+pub fun w() : int
+  v()
+' > "$tm/src/tm/w.kk"
+
+cat > "$ta/koka.toml" <<'EOF'
+[package]
+name = "ta"
+version = "0.1.0"
+[sources]
+directories = ["src"]
+[dependencies]
+tm = { path = "../transmid" }
+[targets.app]
+main = "src/main.kk"
+EOF
+printf 'import tm/w
+fun main()
+  println("w=" ++ w().show)
+' > "$ta/src/main.kk"
+
+assert_ok "a transitive graph resolves and locks" run_in "$ta" "$KOKA" fetch -v0
+
+# Drop the *transitive* package's entry from the lockfile, leaving every
+# manifest and every remaining checksum untouched.  Only the root manifest's
+# direct dependencies were compared, so this passed --locked: `tl` was resolved
+# and linked while the lockfile did not mention it at all.
+cp "$ta/koka.lock" "$ta/koka.lock.good"
+python3 - "$ta/koka.lock" <<'PYDROP'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'\n\[packages\.tl\]\n(?:(?!\n\[).)*', '\n', s, flags=re.S)
+open(p, 'w').write(s)
+PYDROP
+if grep -q '\[packages\.tl\]' "$ta/koka.lock"; then
+  bad "the transitive entry was actually removed from the lockfile"
+else
+  ok "the transitive entry was actually removed from the lockfile"
+fi
+assert_contains "--locked refuses a lockfile missing a transitive package" \
+                "does not describe this build" run_in "$ta" "$KOKA" build --locked -v0
+cp "$ta/koka.lock.good" "$ta/koka.lock"
+assert_ok "and the intact lockfile still satisfies --locked" run_in "$ta" "$KOKA" build --locked -v0
+
 # ---------------------------------------------------------------------------
 group "malformed input is refused, not obeyed"
 

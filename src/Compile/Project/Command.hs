@@ -161,6 +161,19 @@ withProject cmd flags args compile dir
        res <- resolveProject ropts dir version
        case res of
          Left err -> failWith err
+         -- `--locked` means the lockfile describes the build exactly.  Refusing
+         -- to *write* it is not enough: resolution follows the current
+         -- manifests wherever they lead, so a transitive dependency that moved
+         -- to another commit -- or one absent from the lockfile entirely -- was
+         -- fetched, built and linked, and the drift was computed and then
+         -- discarded.  `lockMatchesManifest` compares only the root manifest's
+         -- direct dependencies, so it cannot catch that.
+         Right resolved
+           | projectLocked flags && resChanged resolved
+           -> failWith (lockFileName ++ " does not describe this build\n"
+                          ++ "  the resolved dependency graph differs from the lockfile"
+                          ++ " (a transitive dependency moved, or is missing from it)\n"
+                          ++ "  run `koka fetch` to update it, or drop --locked")
          Right resolved ->
            do -- Write the lockfile unless we were told not to.
               when (resChanged resolved && not (projectLocked flags)) $
