@@ -15,7 +15,8 @@
 --     or a relevant flag selects a *different* directory, so a stale artifact
 --     can never be picked up;
 --   * a source edit keeps the same directory and is handled by the per-module
---     incremental build;
+--     incremental build -- which is why the source hash is recorded in the
+--     stamp but is not part of the directory name;
 --   * a corrupt cache is detected through the stamp file and the directory is
 --     discarded rather than half-used.
 --
@@ -53,33 +54,56 @@ data CacheKey
       , ckProfile     :: String   -- ^ "debug" | "release"
       , ckFlagsHash   :: String   -- ^ the compiler's own hash of build-relevant flags
       , ckLockHash    :: String   -- ^ hash of the rendered lockfile
-      , ckSourceHash  :: String   -- ^ hash of the project's own sources
+        -- | Hash of the project's own sources.  Recorded in the stamp so a
+        -- developer can see what changed, but deliberately *not* part of the
+        -- directory name -- see `cacheKeyHash`.
+      , ckSourceHash  :: String
       , ckNativeHash  :: String   -- ^ hash of resolved native include/link settings
       }
   deriving (Eq, Show)
 
 -- | Human readable, one setting per line.  This is what goes into the stamp
 -- file, so a developer can see *why* the cache key changed.
+--
+-- Lines beginning with @#@ are informational and are ignored when the stamp is
+-- validated.  The source hash is one of them: it is useful to see, but if it
+-- took part in the comparison then every edit would fail validation and the
+-- build tree would be deleted -- exactly the full rebuild that keeping the
+-- source hash out of the directory name is meant to avoid.
 cacheKeyText :: CacheKey -> String
 cacheKeyText k
-  = unlines
-      [ "koka-version = " ++ ckKokaVersion k
-      , "target       = " ++ ckTarget k
-      , "target-os    = " ++ ckTargetOS k
-      , "target-arch  = " ++ ckTargetArch k
-      , "profile      = " ++ ckProfile k
-      , "flags        = " ++ ckFlagsHash k
-      , "lock         = " ++ ckLockHash k
-      , "sources      = " ++ ckSourceHash k
-      , "native       = " ++ ckNativeHash k
-      ]
+  = unlines (cacheKeyIdentity k ++ [ "# sources    = " ++ ckSourceHash k ])
+
+cacheKeyIdentity :: CacheKey -> [String]
+cacheKeyIdentity k
+  = [ "koka-version = " ++ ckKokaVersion k
+    , "target       = " ++ ckTarget k
+    , "target-os    = " ++ ckTargetOS k
+    , "target-arch  = " ++ ckTargetArch k
+    , "profile      = " ++ ckProfile k
+    , "flags        = " ++ ckFlagsHash k
+    , "lock         = " ++ ckLockHash k
+    , "native       = " ++ ckNativeHash k
+    ]
+
+-- | The identity lines of a stamp, with informational lines dropped.
+stampIdentity :: String -> [String]
+stampIdentity = filter (not . isComment) . lines
+  where isComment l = take 1 (dropWhile (== ' ') l) == "#"
 
 -- | The short tag used as the build directory name.
+--
+-- `ckSourceHash` is *not* included.  Koka already does per-module incremental
+-- compilation, and the project layer's job is only to pick which build tree
+-- that happens in.  With the source hash in the name, every edit selected a
+-- brand new directory -- a full rebuild each time, and roughly 13 MB of build
+-- tree per edit that nothing ever collected.  The hash stays in the stamp
+-- text, which is documentation rather than identity.
 cacheKeyHash :: CacheKey -> String
 cacheKeyHash k
   = take 16 (hashStrings
       [ ckKokaVersion k, ckTarget k, ckTargetOS k, ckTargetArch k
-      , ckProfile k, ckFlagsHash k, ckLockHash k, ckSourceHash k, ckNativeHash k ])
+      , ckProfile k, ckFlagsHash k, ckLockHash k, ckNativeHash k ])
 
 -- | All project-generated artifacts live under here.
 projectBuildRoot :: FilePath -> FilePath
@@ -102,7 +126,7 @@ validateCacheDir dir key
          then do createDirectoryIfMissing True dir
                  return False
          else do stamp <- readFileOr (stampFile dir) ""
-                 if stamp == cacheKeyText key
+                 if stampIdentity stamp == cacheKeyIdentity key
                    then return True
                    else do removeDirectoryRecursive dir `catchIOError` (\_ -> return ())
                            createDirectoryIfMissing True dir
@@ -130,7 +154,11 @@ readFileOr p def
 
 -- | `koka clean`: remove generated project artifacts but keep fetched
 -- dependencies, which are expensive to re-download and are pinned anyway.
-clearProjectArtifacts :: FilePath -> IO [FilePath]
+--
+-- Returns each entry with whether it was actually removed.  Swallowing the
+-- error and printing "removed" regardless meant `koka clean` could exit 0
+-- having deleted nothing.
+clearProjectArtifacts :: FilePath -> IO [(FilePath, Maybe String)]
 clearProjectArtifacts projectDir
   = do let root = projectBuildRoot projectDir
        exist <- doesDirectoryExist root
@@ -139,5 +167,9 @@ clearProjectArtifacts projectDir
          else do entries <- listDirectory root
                  forM (sort entries) $ \e ->
                    do let d = root </> e
-                      removeDirectoryRecursive d `catchIOError` (\_ -> return ())
-                      return d
+                      err <- (removeDirectoryRecursive d >> return Nothing)
+                               `catchIOError` (\ioe -> return (Just (show ioe)))
+                      still <- doesDirectoryExist d
+                      return (d, if still && err == Nothing
+                                   then Just "still present after removal"
+                                   else err)
