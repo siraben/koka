@@ -165,7 +165,7 @@ pArray :: Parser TomlValue
 pArray
   = do _  <- char '['
        skipTrivia
-       vs <- pValue `sepEndBy` (skipTrivia >> char ',' >> skipTrivia)
+       vs <- pValue `sepEndBy` pComma
        skipTrivia
        _  <- char ']'
        return (TomlArray vs)
@@ -174,10 +174,16 @@ pInlineTable :: Parser TomlValue
 pInlineTable
   = do _  <- char '{'
        skipTrivia
-       ps <- pPair `sepEndBy` (skipTrivia >> char ',' >> skipTrivia)
+       ps <- pPair `sepEndBy` pComma
        skipTrivia
        _  <- char '}'
        return (TomlTableV ps)
+
+-- `try` matters: the whitespace before a closing bracket would otherwise be
+-- consumed while looking for a separator that is not there, and parsec would
+-- fail the enclosing parser instead of backtracking.
+pComma :: Parser ()
+pComma = try (skipTrivia >> char ',') >> skipTrivia
 
 pQuoted :: Parser String
 pQuoted
