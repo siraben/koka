@@ -141,11 +141,17 @@ gitignoreTemplate
 
 withProject :: ProjectCmd -> Flags -> [String] -> CompileFn -> FilePath -> IO Bool
 withProject ProjClean flags _ _ dir
-  = do removed <- clearProjectArtifacts dir
-       if null removed
-         then putStrLn "nothing to clean"
-         else mapM_ (\d -> putStrLn ("removed " ++ d)) removed
-       return True
+  = do results <- clearProjectArtifacts dir
+       if null results
+         then do putStrLn "nothing to clean"
+                 return True
+         else do mapM_ report results
+                 -- exit non-zero if anything survived, rather than printing
+                 -- "removed" for an entry that is still on disk
+                 return (all ((== Nothing) . snd) results)
+  where
+    report (d, Nothing)  = putStrLn ("removed " ++ d)
+    report (d, Just err) = putStrLn ("could NOT remove " ++ d ++ ": " ++ err)
 
 withProject cmd flags args compile dir
   = do let ropts = ResolveOptions { roLocked   = projectLocked flags
