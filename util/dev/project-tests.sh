@@ -13,8 +13,14 @@ KOKA="${1:-koka}"
 # addressed absolutely.
 case "$KOKA" in
   */*) KOKA="$(cd "$(dirname "$KOKA")" && pwd)/$(basename "$KOKA")" ;;
-  *)   KOKA="$(command -v "$KOKA")" ;;
+  *)   KOKA="$(command -v "$KOKA" || true)" ;;
 esac
+# Without this, an unset compiler turned every assertion into a failure that
+# looked like a bug in the tooling rather than a bug in how the suite was run.
+if [ -z "$KOKA" ] || [ ! -x "$KOKA" ]; then
+  echo "no koka compiler found; pass one as the first argument" >&2
+  exit 2
+fi
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -26,8 +32,11 @@ ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  FAIL %s\n' "$1"; [ $# -gt 1 ] && printf '       %s\n' "$2"; fail=$((fail+1)); }
 group(){ printf '\n== %s\n' "$1"; }
 
-# run a command in a directory without losing the pass/fail counters to a subshell
-run_in() { local d="$1"; shift; ( cd "$d" && "$@" ); }
+# Run a command in a directory without losing the pass/fail counters to a
+# subshell.  `cd || exit 99` rather than `cd &&`: a failed cd otherwise looked
+# exactly like a failed command, so every `assert_fail` would have passed
+# without the compiler being run at all.
+run_in() { local d="$1"; shift; ( cd "$d" || exit 99; "$@" ); }
 
 # assert_ok <name> <command...>
 assert_ok() {
@@ -212,13 +221,31 @@ elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
 [ "$elapsed" -lt 5000 ] && ok "no-op rebuild is fast (${elapsed}ms)" \
                          || bad "no-op rebuild is fast" "took ${elapsed}ms"
 
-# a source implementation change keeps the *directory* (incremental build) but
-# must produce new behaviour
+# A source implementation change keeps the *directory* (incremental build) but
+# must produce new behaviour.  Both halves are asserted: with the source hash
+# in the directory name, every edit silently started a fresh full build tree
+# and nothing ever collected the old ones.
 cat > "$lib/src/greet/hello.kk" <<'EOF'
 pub fun greeting(name : string) : string
   "HELLO, " ++ name
 EOF
 assert_contains "implementation change takes effect" "HELLO, world" run_in "$app" "$KOKA" run -v0
+
+# Editing the project's *own* sources must reuse the build directory: that is
+# what leaves the work to Koka's per-module incremental compilation.  (A path
+# dependency is different -- its checksum is part of the lockfile, so editing
+# one does select a new directory.)
+( cd "$app" && "$KOKA" build -v0 >/dev/null 2>&1 )
+before="$(key_of)"
+cat >> "$app/src/main.kk" <<'EOF'
+
+fun unused-helper() : int
+  7
+EOF
+assert_ok "an edit to the project's own sources builds" run_in "$app" "$KOKA" build -v0
+[ "$(key_of)" = "$before" ] && ok "an edit to own sources reuses the build directory" \
+                            || bad "an edit to own sources reuses the build directory" \
+                                   "was [$before] now [$(key_of)]"
 
 # an exported type change must be picked up across the dependency boundary
 cat > "$lib/src/greet/hello.kk" <<'EOF'
@@ -281,10 +308,27 @@ before="$(key_of)"
 [ "$(key_of)" != "$before" ] && ok "--release selects a different cache entry" \
                               || bad "--release selects a different cache entry"
 
-# a corrupt cache is discarded, not half-used
-victim="$(ls "$builddir" | head -1)"
-printf 'this is not a cache key\n' > "$builddir/$victim/cache-key.txt"
-assert_ok "corrupt cache is discarded and rebuilt" run_in "$app" "$KOKA" build -v0
+# A corrupt cache is discarded, not half-used.  Exit status alone was not
+# enough: a build that ignored the corrupt stamp entirely and reused the stale
+# artifacts would also have exited 0.
+# A fresh project, so there is exactly one cache directory and the one being
+# corrupted is unambiguously the one the next build will use.  (Picking
+# `ls | head -1` after a --release build selected whichever name sorted first,
+# which is not necessarily the debug entry.)
+cor="$root/corrupt"
+mkdir -p "$cor"
+( cd "$cor" && "$KOKA" init -v0 >/dev/null 2>&1 )
+( cd "$cor" && "$KOKA" build -v0 >/dev/null 2>&1 )
+cordir="$cor/.koka/build"
+victim="$(ls "$cordir" | head -1)"
+printf 'this is not a cache key\n' > "$cordir/$victim/cache-key.txt"
+assert_ok "corrupt cache is discarded and rebuilt" run_in "$cor" "$KOKA" build -v0
+if grep -q 'this is not a cache key' "$cordir/$victim/cache-key.txt" 2>/dev/null; then
+  bad "the corrupt stamp was replaced, not left in place" \
+      "$(head -1 "$cordir/$victim/cache-key.txt")"
+else
+  ok "the corrupt stamp was replaced, not left in place"
+fi
 
 # ---------------------------------------------------------------------------
 group "koka clean"
@@ -388,6 +432,84 @@ assert_contains "an unsatisfiable compiler constraint is reported" "requires kok
 nowhere="$root/nowhere"
 mkdir -p "$nowhere"
 assert_contains "a missing manifest is reported" "koka.toml" run_in "$nowhere" "$KOKA" build -v0
+
+# ---------------------------------------------------------------------------
+group "malformed input is refused, not obeyed"
+
+# A dependency name becomes a directory under .koka/deps, and fetching deletes
+# that directory first -- so a name that escapes the project would delete
+# whatever it pointed at.
+traversal="$root/traversal"
+mkdir -p "$traversal/src/t"
+cat > "$traversal/koka.toml" <<'EOF'
+[package]
+name = "traversal"
+version = "0.1.0"
+
+[sources]
+directories = ["src"]
+
+[dependencies]
+"../../../../tmp/koka-traversal-victim" = { path = "../lib" }
+EOF
+assert_contains "a dependency name that escapes the project is refused" \
+                "is not allowed" run_in "$traversal" "$KOKA" build -v0
+
+# `version = _` used to reach `read ""`, which is partial: the process died
+# with an exception instead of reporting a parse error.
+badlock="$root/badlock"
+mkdir -p "$badlock/src/b"
+cat > "$badlock/koka.toml" <<'EOF'
+[package]
+name = "badlock"
+version = "0.1.0"
+
+[sources]
+directories = ["src"]
+EOF
+printf 'version = _\n' > "$badlock/koka.lock"
+out="$(cd "$badlock" && "$KOKA" build -v0 2>&1)"
+case "$out" in
+  *"Prelude.read"*|*"no parse"*)
+    bad "an underscore-only integer is a parse error, not a crash" "$out" ;;
+  *)
+    ok "an underscore-only integer is a parse error, not a crash" ;;
+esac
+
+# A checksum of the wrong type silently disabled verification altogether.
+cat > "$badlock/koka.lock" <<'EOF'
+version = 1
+root = "badlock"
+koka = "3.2.7"
+
+[packages.badlock]
+kind = "path"
+path = "."
+checksum = 0
+EOF
+assert_contains "a non-string checksum is reported as corruption" \
+                "checksum" run_in "$badlock" "$KOKA" build -v0
+
+# A duplicate key silently kept the first binding, so a manifest could say one
+# thing and mean another.
+cat > "$badlock/koka.toml" <<'EOF'
+[package]
+name = "safe"
+name = "other"
+version = "0.1.0"
+EOF
+assert_contains "a duplicate key is refused" "duplicate key" run_in "$badlock" "$KOKA" build -v0
+
+# A non-numeric constraint operand parsed as version 0, so it was satisfied by
+# every compiler rather than reported as malformed.
+cat > "$badlock/koka.toml" <<'EOF'
+[package]
+name = "badlock"
+version = "0.1.0"
+koka = ">=banana"
+EOF
+assert_contains "a malformed version constraint is refused" \
+                "not a version" run_in "$badlock" "$KOKA" build -v0
 
 # ---------------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
