@@ -67,6 +67,7 @@
               pkg-config
               gdb
               valgrind
+              time
               curl
               jq
               sqlite
