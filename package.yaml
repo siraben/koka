@@ -46,6 +46,9 @@ dependencies:
   - directory
   - filepath
   - process
+  # project tooling: lockfile checksums and build-cache keys
+  - cryptohash-sha256
+  - base16-bytestring
 
 library:
   other-extensions:
