@@ -20,6 +20,7 @@ module Compile.Project.Fetch
   ) where
 
 import Control.Monad      ( when, unless, forM, foldM )
+import Data.Char          ( isSpace )
 import Data.List          ( sortOn, nub, sort, intercalate )
 import Data.Maybe         ( fromMaybe, catMaybes )
 import System.Directory   ( doesDirectoryExist, doesFileExist
@@ -201,12 +202,17 @@ relativeTo base target
     strip (x:xs) (y:ys) | x == y = let (c,a,b') = strip xs ys in (x:c, a, b')
     strip xs ys = ([], xs, ys)
 
--- | Where a git dependency is checked out.  The directory name embeds the
--- pinned revision so that changing the pin produces a fresh checkout instead
--- of mutating the old one.
-depCheckoutDir :: FilePath -> String -> String -> FilePath
-depCheckoutDir projectDir name rev
-  = projectDir </> ".koka" </> "deps" </> (name ++ "-" ++ take 12 rev)
+-- | Where a git dependency is checked out.
+--
+-- The directory name embeds a digest of the URL *and* the full revision, so
+-- changing either produces a fresh checkout instead of mutating the old one.
+-- Twelve characters of the revision alone was not enough: two pins sharing a
+-- 12-character prefix -- including one naming a commit that does not exist --
+-- resolved to the same directory, and the existing checkout was reused while
+-- the lockfile recorded the new revision against the old commit's contents.
+depCheckoutDir :: FilePath -> String -> String -> String -> FilePath
+depCheckoutDir projectDir name url rev
+  = projectDir </> ".koka" </> "deps" </> (name ++ "-" ++ take 16 (hashStrings [url, rev]))
 
 -- `base` is what a relative path dependency is resolved against; `projectDir`
 -- is still where git checkouts are stored, so a project has one dependency
@@ -221,8 +227,11 @@ materialize opts base projectDir mbLock dep
                 then return (Left ("path dependency '" ++ depName dep ++ "' not found: " ++ dir))
                 else finish dir
       DepGit url rev
-        -> do let dir = depCheckoutDir projectDir (depName dep) rev
-              ok <- doesFileExist (dir </> manifestFileName)
+        -> do let dir = depCheckoutDir projectDir (depName dep) url rev
+              -- A checkout is only reusable if it is a real worktree sitting at
+              -- exactly the requested commit.  "contains a koka.toml" also
+              -- accepted a directory left behind by an interrupted fetch.
+              ok <- checkoutIsAt dir rev
               if ok
                 then finish dir
                 else if roOffline opts
@@ -288,6 +297,22 @@ materialize opts base projectDir mbLock dep
 -- git
 -----------------------------------------------------------------------------
 
+-- | Is `dir` a git worktree sitting at exactly `rev`?
+--
+-- "contains a koka.toml" was the old test, which also accepted a directory an
+-- interrupted fetch had left behind, and -- once checkout directories were
+-- keyed on a 12-character prefix -- a checkout of an entirely different
+-- commit.  Asking git what it is actually at costs one process and removes
+-- both.
+checkoutIsAt :: FilePath -> String -> IO Bool
+checkoutIsAt dir rev
+  = do ok <- doesFileExist (dir </> manifestFileName)
+       if not ok then return False
+         else do (code,out,_) <- readProcessWithExitCode "git" ["-C",dir,"rev-parse","HEAD"] ""
+                 return (code == ExitSuccess && trim out == rev)
+  where
+    trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
+
 -- | Fetch exactly one commit into a fresh directory.  Tries a shallow fetch of
 -- the pinned object first (supported by GitHub and any server with
 -- `uploadpack.allowReachableSHA1InWant`), then falls back to a full fetch.
@@ -314,8 +339,15 @@ gitFetchPinned verbose url rev dir
                      case co of
                        Left err -> return (Left (fetchFailed err))
                        Right () -> do sub <- git ["-C",dir,"submodule","update","--init","--recursive","-q"]
-                                      -- submodules are optional; ignore failure
-                                      return (Right ())
+                                      case sub of
+                                        -- A checkout whose submodules did not
+                                        -- arrive is incomplete, and because a
+                                        -- checkout is trusted once it exists it
+                                        -- would never be retried.  Remove it and
+                                        -- report the failure.
+                                        Left err -> do removeDirectoryRecursive dir
+                                                       return (Left (fetchFailed err))
+                                        Right () -> return (Right ())
   where
     fetchFailed err
       = "failed to fetch " ++ url ++ " at " ++ rev ++ "\n" ++ err

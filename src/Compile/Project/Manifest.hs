@@ -22,7 +22,7 @@ module Compile.Project.Manifest
   , defaultManifestText
   ) where
 
-import Data.Char        ( isDigit, isSpace )
+import Data.Char        ( isAlphaNum, isDigit, isSpace )
 import Data.List        ( isPrefixOf, sortOn, intercalate )
 import Data.Maybe       ( fromMaybe )
 import System.Directory ( doesFileExist )
@@ -141,6 +141,16 @@ parseManifest path content
                        Nothing  -> Left (path ++ ": [dependencies] must be a table")
                        Just tbl -> mapM readDep tbl
 
+    -- A dependency name is not just a label: it becomes a directory name under
+    -- .koka/deps, and `gitFetchPinned` deletes that directory before fetching.
+    -- A name of "../../../../tmp/victim" would therefore escape the project and
+    -- delete whatever it landed on.  Names are restricted at the point they are
+    -- read, so nothing downstream has to remember to be careful.
+    readDep (name, val)
+      | not (validDepName name)
+        = Left (path ++ ": dependency name " ++ show name ++ " is not allowed; "
+                  ++ "names may contain letters, digits, '-', '_' and '.', "
+                  ++ "may not start with '.', and may not be empty")
     readDep (name, val)
       = case tomlTable val of
           Nothing -> Left (path ++ ": dependency '" ++ name ++ "' must be a table like "
@@ -163,6 +173,10 @@ parseManifest path content
               (Just _, Just _, _)
                 -> Left (path ++ ": dependency '" ++ name ++ "': cannot be both a path and a git dependency")
               _ -> Left (path ++ ": dependency '" ++ name ++ "': expected 'path', or 'git' with 'rev'")
+
+    validDepName n
+      = not (null n) && head n /= '.' && all okChar n
+      where okChar c = isAlphaNum c || c `elem` "-_."
 
     isFullRev r = length r == 40 && all isHexDigit' r
     isHexDigit' c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
@@ -193,13 +207,26 @@ checkKokaConstraint constraint actual
       = let c = trim raw
         in if null c then Right () else
            let (op,rest) = splitOp c
-               want      = parseVersion (trim rest)
-               have      = parseVersion actual
-               cmp       = compareVersions have want
-           in if satisfies op cmp
-                then Right ()
-                else Left ("this project requires koka " ++ trim constraint
-                             ++ " but the compiler is " ++ actual)
+               operand   = trim rest
+           in if not (validVersion operand)
+                -- `parseVersion` mapped any non-numeric component to 0, so
+                -- `koka = ">=banana"` was a satisfied constraint rather than a
+                -- malformed one, and the manifest looked fine.
+                then Left ("malformed koka version constraint " ++ show (trim constraint)
+                             ++ ": " ++ show operand ++ " is not a version")
+                else
+                  let want = parseVersion operand
+                      have = parseVersion actual
+                      cmp  = compareVersions have want
+                  in if satisfies op cmp
+                       then Right ()
+                       else Left ("this project requires koka " ++ trim constraint
+                                    ++ " but the compiler is " ++ actual)
+
+    -- one or more dot-separated runs of digits
+    validVersion v
+      = not (null v) && all okPart (splitOn '.' v)
+      where okPart p = not (null p) && all isDigit p
 
     splitOp s
       | ">=" `isPrefixOf` s = (">=", drop 2 s)
