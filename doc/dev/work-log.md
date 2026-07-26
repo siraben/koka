@@ -120,7 +120,7 @@ silently truncates a value is worse than one that refuses it.
 
 ## Milestone 3 — foundational libraries
 
-Six packages, 149 tests, clean under ASan/UBSan/LSan.
+Six packages, 153 tests, clean under ASan/UBSan/LSan.
 
 Decisions:
 
@@ -132,8 +132,11 @@ Decisions:
   Koka's `:int` is arbitrary precision and has no bitwise operations, so a trie
   would have needed a detour through `int64`; an ordered tree needs only
   comparison.  Collisions live in a per-node bucket.  The balance invariant is
-  asserted by the tests after every operation, and every property is checked
-  against an association-list reference rather than against itself.
+  asserted by the tests after every operation.  In `hashmap/map` every property
+  is checked against an association-list reference; in `hashmap/set` the
+  properties are stated against sorted `list` operations, for the same reason
+  -- a law written only in terms of `union`, `intersect` and the set's own
+  `(==)` is satisfied by an `(==)` that always returns `True`.
 * **`resource/scope` is effect polymorphic and never uses `try`.**  Koka only
   subsumes *closed* effect rows, so a version written with `try` would work at
   one fixed effect and could not sit under a cancellation handler.  This
@@ -240,6 +243,9 @@ Baseline on this machine (Linux x86-64, gcc 15.3, debug profile), from
 | `samples/basic/fibonacci`  | 6.7 s       | 0.94 s        | 1.57 MB     | 4.74 MB    |
 | `samples/handlers/basic`   | 8.9 s       | 2.11 s        | 2.45 MB     | 6.58 MB    |
 
-Link dominates: ~15 s of per-module C compilation across 26 modules, wall
-clock ~6.7 s at 16-way concurrency.  Recorded as a baseline only; no compiler
-optimization work is in scope before Milestone 4 passes.
+C compilation dominates, not linking: about 15 CPU-seconds of per-module C
+compilation across 26 modules, which at 16-way concurrency is roughly 1-2 s of
+the 6.7 s clean-build wall clock; the rest is Koka's own front end plus the
+link.  Machine: Linux x86-64, AMD Ryzen 9 5950X (16 cores, 32 threads), gcc 15.3,
+debug profile.  Recorded as a baseline only; no compiler optimization work is in
+scope before Milestone 4 passes.

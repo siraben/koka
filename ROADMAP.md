@@ -59,14 +59,14 @@ Known deviations from upstream:
 - [x] `koka init | fetch | build | run | test | clean`
 - [x] content-hash build cache keyed on compiler version, target, profile,
       flags, lockfile, sources, and native settings
-- [x] 39 project tooling tests (`util/dev/project-tests.sh`)
+- [x] 45 project tooling tests (`util/dev/project-tests.sh`)
 
 Not implemented, by design: registry, publishing, semver solving, feature
 flags, optional dependencies, aliases, workspaces, binary caches.
 
 ## Milestone 3 — foundational libraries
 
-Packages under `koka-packages/`, 149 tests, clean under ASan/UBSan/LSan:
+Packages under `koka-packages/`, 153 tests, clean under ASan/UBSan/LSan:
 
 - [x] `kktest` — assertions, nested groups, expected failures, alarm-based
       watchdog timeouts, temporary directories, property testing with shrinking
@@ -80,7 +80,7 @@ Packages under `koka-packages/`, 149 tests, clean under ASan/UBSan/LSan:
 
 ## Milestone 4 — HTTP/JSON/SQLite service
 
-Done (59 tests, clean under ASan/UBSan/LSan):
+Done (137 tests, clean under ASan/UBSan/LSan):
 
 - [x] event loop and timers (libuv), native handles kept internal behind a
       completion queue
@@ -105,9 +105,13 @@ cancel work, shutdown stops accepting and waits for active work, sockets and
 statements and connections are cleaned up, logs carry request ids and results,
 dependencies resolve from the lockfile, and the sanitizer checks pass.
 
-Test totals: 244 package tests, 28 service unit tests, 42 integration and
-stress assertions, 39 project-tooling tests. All green, and the integration
-suite is green under ASan/UBSan as well.
+Test totals: 290 package tests (153 from Milestone 3, 137 from Milestone 4),
+28 service unit tests, 46 integration and stress assertions, 45
+project-tooling tests. All green, and the library and integration suites run
+under ASan/UBSan in the scheduled sanitizer job.
+
+These numbers are counted from the runners' own output; if they and the
+runners disagree, the runners are right.
 
 ---
 
