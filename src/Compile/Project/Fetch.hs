@@ -26,7 +26,7 @@ import System.Directory   ( doesDirectoryExist, doesFileExist
                           , createDirectoryIfMissing, canonicalizePath
                           , removeDirectoryRecursive )
 import System.Exit        ( ExitCode(..) )
-import System.FilePath    ( (</>), takeDirectory, isAbsolute, normalise )
+import System.FilePath    ( (</>), takeDirectory, isAbsolute, normalise, splitDirectories )
 import System.Process     ( readProcessWithExitCode )
 
 import Compile.Project.Manifest
@@ -101,7 +101,7 @@ resolveWith opts projectDir root mbLock
            -> return (Left (lockFileName ++ " not found, but --locked was given; "
                               ++ "run `koka fetch` first (without --locked) to create it"))
          (True, Just lk)
-           -> case lockMatchesManifest root lk of
+           -> case lockMatchesManifest projectDir root lk of
                 Left err -> return (Left (lockFileName ++ " is out of date: " ++ err
                                             ++ "\n(--locked refuses to update it)"))
                 Right () -> go (Just lk)
@@ -120,8 +120,16 @@ resolveWith opts projectDir root mbLock
                                   Just old -> renderLock old /= renderLock newLock
                   return (Right (Resolved root deps newLock changed))
 
+    -- A path dependency is recorded *relative to the project root*, not as the
+    -- manifest that happened to be walked first spelled it.  The same package
+    -- is reachable by different relative paths from different packages, and
+    -- recording one of those spellings made `--locked` reject a manifest that
+    -- was perfectly consistent.  Project-relative is also machine independent,
+    -- which an absolute path would not be.
     toEntry d = LockEntry { lockName     = rdName d
-                          , lockSource   = rdSource d
+                          , lockSource   = case rdSource d of
+                                             DepGit u r -> DepGit u r
+                                             DepPath _  -> DepPath (relativeTo projectDir (rdDir d))
                           , lockChecksum = rdChecksum d
                           , lockDeps     = sort (map depName (manDeps (rdManifest d)))
                           }
@@ -177,6 +185,21 @@ resolveWith opts projectDir root mbLock
 -----------------------------------------------------------------------------
 -- Materialising one dependency
 -----------------------------------------------------------------------------
+
+-- | Express @target@ relative to @base@, using POSIX separators so the result
+-- is identical on every platform.
+relativeTo :: FilePath -> FilePath -> FilePath
+relativeTo base target
+  = let b = splitDirectories (normalise base)
+        t = splitDirectories (normalise target)
+        (_common, br, tr) = strip b t
+        ups = replicate (length br) ".."
+    in case ups ++ tr of
+         [] -> "."
+         ps -> intercalate "/" ps
+  where
+    strip (x:xs) (y:ys) | x == y = let (c,a,b') = strip xs ys in (x:c, a, b')
+    strip xs ys = ([], xs, ys)
 
 -- | Where a git dependency is checked out.  The directory name embeds the
 -- pinned revision so that changing the pin produces a fresh checkout instead
