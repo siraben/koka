@@ -10,8 +10,8 @@ Scope is deliberately narrow.  Anything not needed by that service is out.
 | --------- | ------ |
 | 1. Engineering baseline      | done |
 | 2. Project and package tooling | done |
-| 3. Foundational libraries    | in progress |
-| 4. HTTP/JSON/SQLite service  | not started |
+| 3. Foundational libraries    | done |
+| 4. HTTP/JSON/SQLite service  | in progress |
 
 ---
 
@@ -55,28 +55,38 @@ flags, optional dependencies, aliases, workspaces, binary caches.
 
 ## Milestone 3 — foundational libraries
 
-Packages under `koka-packages/`:
+Packages under `koka-packages/`, 149 tests, clean under ASan/UBSan/LSan:
 
-- [ ] `test` — assertions, groups, discovery, expected failures, deterministic
-      output, temp files, timeouts, property testing with shrinking
-- [ ] `bytes` — immutable bytes, slices, builders, encoding helpers, hashing
-- [ ] `strbuilder` — non-quadratic string building with escaping
-- [ ] `hashmap` — hash map and hash set with documented iteration order
-- [ ] `resource` — one scoped acquire/use/release abstraction
-- [ ] `fileio` — handles, streaming reads, atomic replace, temp files, metadata
+- [x] `kktest` — assertions, nested groups, expected failures, alarm-based
+      watchdog timeouts, temporary directories, property testing with shrinking
+- [x] `bytes` — immutable bytes over `kk_bytes_t`, slices, an amortized O(1)
+      builder, strict UTF-8 validation, integer encoding, FNV-1a hashing
+- [x] `strbuilder` — non-quadratic string building with RFC 8259 escaping
+- [x] `hashmap` — persistent hash map and hash set, weight-balanced, checked
+      against an association-list reference
+- [x] `resource` — scoped acquire/use/release, effect polymorphic so it works
+      under a cancellation handler
 
 ## Milestone 4 — HTTP/JSON/SQLite service
 
-- [ ] structured tasks: scoped groups, spawn, await, failure propagation,
-      cancellation, timeout, racing, shutdown
-- [ ] event loop and timers (libuv), with native handles kept internal
-- [ ] TCP and DNS, integrated with scoped resources
-- [ ] bounded channels with producer backpressure
-- [ ] JSON: value type, parser with limits and positions, generator
+Done (59 tests, clean under ASan/UBSan/LSan):
+
+- [x] event loop and timers (libuv), native handles kept internal behind a
+      completion queue
+- [x] structured tasks: scoped groups, spawn, failure propagation that cancels
+      siblings, cooperative cancellation that unwinds through cleanup, timers,
+      deadlines as a real two-request race
+- [x] TCP and DNS, cancellable, with task-scoped socket release
+- [x] bounded channels with producer backpressure and no silent loss
+- [x] JSON: value type, parser with limits and source positions, generator
+
+Remaining:
+
 - [ ] HTTP/1.1 server subset with conservative limits and a minimal router
 - [ ] SQLite bindings: prepared statements, transactions, migrations
 - [ ] structured logging as an effect
 - [ ] the reference service and its unit, integration, and stress tests
+- [ ] `koka-examples` repository and its documentation
 
 ---
 
@@ -91,3 +101,18 @@ Packages under `koka-packages/`:
   exit status.
 * Path dependencies are hashed on every command; for very large trees that
   cost is linear in the source size.
+* **`finally` cannot span a suspension point inside a task.**  When the
+  scheduler's handler captures a continuation and returns without resuming,
+  Koka treats the computation as abandoned and runs `finally` handlers
+  immediately.  Inside a task use `runtime/task`'s `defer` /
+  `with-async-resource`, which release when the task really ends.  This is a
+  property of the runtime design, not a bug that can be patched away, and it is
+  documented at every affected API.
+* koka 3.2.7's type inference fails with an internal error ("no empty
+  iconstraints") when a `ref` is dereferenced inline inside a function carrying
+  a user-defined effect.  Wrapping each dereference in a monomorphic `io`
+  helper avoids it; the runtime package does this throughout.
+* The task scheduler is single threaded and cooperative.  A task that never
+  suspends is never interrupted, so a long computation must check
+  `cancellation-requested` itself.
+* Only IPv4 is supported by the TCP and DNS bindings.
