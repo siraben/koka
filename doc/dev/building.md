@@ -212,5 +212,7 @@ koka --fasan -e program.kk
 
 `--fasan` compiles with AddressSanitizer, UndefinedBehaviorSanitizer and leak
 checking, and implies `--fstdalloc` (mimalloc hides leaks from the sanitizers).
-The scheduled CI job runs the integration tests under this flag; see
+The scheduled CI job checks out the sibling `koka-packages` and
+`koka-examples` repositories and runs both the library suites and the
+reference service's integration tests under this flag; see
 `.github/workflows/sanitize.yml`.

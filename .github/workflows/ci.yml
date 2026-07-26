@@ -54,6 +54,27 @@ jobs:
           ./result/bin/koka -c -v0 --stats=json --stats-file=stats.json samples/basic/fibonacci.kk
           nix shell nixpkgs#jq -c jq -e '.total_ms >= 0 and .generated_c.bytes > 0' stats.json
 
+      # The libraries and the reference service are separate repositories, so
+      # they are checked out here.  Without this, nothing in CI ever ran them
+      # and their test counts were being quoted from local runs alone.
+      - uses: actions/checkout@v4
+        with:
+          repository: siraben/koka-packages
+          path: koka-packages
+
+      - uses: actions/checkout@v4
+        with:
+          repository: siraben/koka-examples
+          path: koka-examples
+
+      - name: Library test suites
+        run: KOKA="$PWD/result/bin/koka" ./koka-packages/run-tests.sh
+
+      - name: Reference service integration and stress tests
+        run: |
+          KOKA="$PWD/result/bin/koka" \
+            ./koka-examples/notes-service/run-integration-tests.sh
+
   compiler-test-suite:
     runs-on: ubuntu-latest
     timeout-minutes: 120

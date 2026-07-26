@@ -63,15 +63,38 @@ jobs:
           EOF
           ./result/bin/koka --fasan -e -v0 /tmp/asan-smoke.kk
 
-      # Representative integration tests of the reference stack, under the
-      # sanitizers.  Only runs once those packages exist in the tree.
-      - name: Sanitize the reference service integration tests
+      # The libraries and the reference service live in sibling repositories,
+      # so they have to be checked out explicitly -- the previous version of
+      # this step guarded on a path that does not exist and therefore always
+      # took the "skipped" branch while the docs claimed CI ran it.
+      - uses: actions/checkout@v4
+        with:
+          repository: siraben/koka-packages
+          path: koka-packages
+
+      - uses: actions/checkout@v4
+        with:
+          repository: siraben/koka-examples
+          path: koka-examples
+
+      - name: Sanitize the library test suites
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
-          if [ -x ../koka-examples/run-integration-tests.sh ]; then
-            ASAN_OPTIONS=detect_leaks=1 ../koka-examples/run-integration-tests.sh --asan
-          else
-            echo "reference service not present in this repository; skipped"
-          fi
+          set -e
+          KOKA="$PWD/result/bin/koka" KOKA_TEST_FLAGS=--fasan \
+            ./koka-packages/run-tests.sh
+
+      - name: Sanitize the reference service integration tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -e
+          test -x koka-examples/notes-service/run-integration-tests.sh
+          KOKA="$PWD/result/bin/koka" \
+            ./koka-examples/notes-service/run-integration-tests.sh --asan
 
   valgrind:
     runs-on: ubuntu-latest
