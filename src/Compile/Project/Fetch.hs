@@ -141,15 +141,16 @@ resolveWith opts projectDir root mbLock
     step _ _ _ acc@(Left _) _ = return acc
     step lk base stack (Right (done, seen)) dep
       = do let name = depName dep
+           ident <- identityOf base dep
            if name `elem` stack
              then return (Left ("dependency cycle: "
                                   ++ intercalate " -> " (reverse (name:stack)) ))
              else case lookup name seen of
-                    Just src
-                      | src /= depSource dep
-                        -> return (Left ("dependency '" ++ name ++ "' is required twice with "
-                                           ++ "different sources:\n  " ++ depSourceKey src
-                                           ++ "\n  " ++ depSourceKey (depSource dep)))
+                    Just prev
+                      | prev /= ident
+                        -> return (Left ("dependency '" ++ name ++ "' is required twice as "
+                                           ++ "different packages:\n  " ++ prev
+                                           ++ "\n  " ++ ident))
                       | otherwise -> return (Right (done, seen))
                     Nothing
                       -> do mb <- materialize opts base projectDir lk dep
@@ -157,9 +158,21 @@ resolveWith opts projectDir root mbLock
                               Left err -> return (Left err)
                               Right rd ->
                                 do inner <- foldM (step lk (rdDir rd) (name:stack))
-                                                  (Right (done, (name, depSource dep):seen))
+                                                  (Right (done, (name, ident):seen))
                                                   (manDeps (rdManifest rd))
                                    return (fmap (\(d2,s2) -> (rd:d2, s2)) inner)
+
+    -- Two packages are the same when they resolve to the same place, not when
+    -- they are *written* the same way: `../bytes` from one package and
+    -- `../../koka-packages/bytes` from another are one package, and treating
+    -- them as a conflict would make any diamond in the graph unbuildable.
+    identityOf base dep
+      = case depSource dep of
+          DepGit u r  -> return ("git:" ++ u ++ "#" ++ r)
+          DepPath rel -> do let raw = if isAbsolute rel then rel else normalise (base </> rel)
+                            exist <- doesDirectoryExist raw
+                            canon <- if exist then canonicalizePath raw else return raw
+                            return ("path:" ++ canon)
 
 -----------------------------------------------------------------------------
 -- Materialising one dependency
