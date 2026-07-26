@@ -32,6 +32,33 @@ if ! grep -q "^smoke:42$" <<<"$out"; then
   exit 1
 fi
 
+# `with` binding a pattern rather than a plain name.  This aborted the compiler
+# with an internal error, so it is worth a line here: the failure was a crash,
+# not a diagnostic, and nothing else in the tree exercises the construct.
+cat > "$tmp/withpat.kk" <<'EOF'
+fun and-then( r : either<string,a>, next : (a) -> either<string,b> ) : either<string,b>
+  match r
+    Left(x)  -> Left(x)
+    Right(v) -> next(v)
+
+fun two() : either<string,int>
+  with (a, b) <- Right((1,2)).and-then
+  Right(a + b)
+
+fun three() : either<string,int>
+  with (a, b, c) <- Right((1,2,3)).and-then
+  Right(a + b + c)
+
+fun main()
+  println(two().show ++ " " ++ three().show)
+EOF
+
+if ! "$KOKA" -v0 -e "$tmp/withpat.kk" 2>&1 | grep -q "^Right(3) Right(6)$"; then
+  echo "smoke test FAILED: 'with' with a pattern binder" >&2
+  "$KOKA" -v0 -e "$tmp/withpat.kk" 2>&1 | head -5 >&2
+  exit 1
+fi
+
 # The C really has to have been generated and compiled.
 if ! "$KOKA" -v0 -c --showc "$tmp/smoke.kk" 2>/dev/null | grep -q "kk_std_core"; then
   echo "smoke test FAILED: --showc produced no recognizable generated C" >&2
