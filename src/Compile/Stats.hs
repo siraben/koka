@@ -35,6 +35,7 @@ module Compile.Stats
   ) where
 
 import Data.IORef
+import Numeric           ( showHex )
 import Data.List          ( sortOn, isSuffixOf, foldl', intercalate )
 import Data.Time.Clock    ( getCurrentTime, diffUTCTime, UTCTime )
 import Control.Exception  ( finally )
@@ -231,6 +232,9 @@ jobj kvs = "{" ++ intercalate "," [ jstr k ++ ":" ++ v | (k,v) <- kvs ] ++ "}"
 jarr :: [String] -> String
 jarr vs = "[" ++ intercalate "," vs ++ "]"
 
+-- Every control character must be escaped, not just the five with short
+-- forms: a path containing, say, a form feed produced output that standard
+-- JSON parsers reject, which defeats the point of a machine-readable mode.
 jstr :: String -> String
 jstr s = '"' : concatMap esc s ++ "\""
   where
@@ -239,7 +243,13 @@ jstr s = '"' : concatMap esc s ++ "\""
     esc '\n' = "\\n"
     esc '\t' = "\\t"
     esc '\r' = "\\r"
-    esc c    = [c]
+    esc '\b' = "\\b"
+    esc '\f' = "\\f"
+    esc c
+      | c < ' ' || c == '\DEL' = "\\u" ++ pad (showHex (fromEnum c) "")
+      | otherwise             = [c]
+
+    pad h = replicate (4 - length h) '0' ++ h
 
 -- | Milliseconds with three decimals, never in exponent notation (some JSON
 -- consumers are picky, and it reads better in a diff).
